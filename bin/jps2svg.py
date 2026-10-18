@@ -31,8 +31,10 @@
 * 歌词: 一字一音、@ 跳过、~ 连字、标点自动、歌词注释 ".."、英文 / 分词
 * 分页 [fenye]
 
-为了保持实现可读，少量高级效果做了近似处理（例如声部间的节拍对齐按
-小节对齐、跨行连音线不自动跨页等），这些在代码中以 NOTE 标注。
+版面尽可能贴近在线转换器(http://zhipu.lezhi99.com/)的输出：
+每一行按"时值/节拍"自动撑满页面宽度并两端对齐，同一拍内的减时线音符
+相互靠近；多声部共用同一套小节网格。仍有个别高级效果做了近似处理，
+已在代码中以 NOTE 标注。
 """
 
 import argparse
@@ -49,29 +51,68 @@ except ImportError:  # pragma: no cover
 
 
 # --------------------------------------------------------------------------
-# 基本常量 (单位: px, 依据 A4 = 210x297mm, 96dpi)
+# 基本常量
+#
+# 在线转换器以 1000x1415 作为 A4 画布，本程序沿用同一坐标系，其它纸张
+# 按比例缩放。所有尺寸常量都以 A4(宽 1000) 为基准。
 # --------------------------------------------------------------------------
-MM = 96.0 / 25.4
+REF_W = 1000.0                      # A4 参考宽度
+PX_PER_MM = REF_W / 210.0           # 1000 / 210 mm
 PAGE_SIZES = {
-    "A4": (210 * MM, 297 * MM),      # 793.7 x 1122.5
-    "A3": (297 * MM, 420 * MM),
-    "B5": (176 * MM, 250 * MM),
-    "Letter": (8.5 * 96, 11 * 96),
+    "A4": (210 * PX_PER_MM, 297 * PX_PER_MM),
+    "A3": (297 * PX_PER_MM, 420 * PX_PER_MM),
+    "B5": (176 * PX_PER_MM, 250 * PX_PER_MM),
+    "Letter": (8.5 * 25.4 * PX_PER_MM, 11 * 25.4 * PX_PER_MM),
 }
 
-FONT_SANS = "'Microsoft YaHei','Noto Sans CJK SC','PingFang SC',sans-serif"
-FONT_NOTE = "Georgia,'Times New Roman','Songti SC',serif"
+FONT_SANS = ("'Microsoft YaHei','Noto Sans CJK SC','PingFang SC',"
+             "'Source Han Sans SC','WenQuanYi Zen Hei',sans-serif")
+FONT_NOTE = ("'Liberation Serif','Times New Roman','Nimbus Roman',"
+             "'FreeSerif',serif")
 
-NOTE_SIZE = 28          # 音符数字字号
-CELL = 36               # 单个音符的参考宽度
-GS = 0.36               # 倚音占基本音符宽度的比例
-BAR_RATIO = 0.5         # 小节线占基本音符宽度的比例
-LYRIC_SIZE = 18         # 歌词字号
-LYRIC_LINE_H = 24       # 歌词行间距
-SMALL = 15              # 倚音/注释等小字号
-DOT_R = 2.3             # 八度点半径
-UL_GAP = 8              # 减时线行间距
-MIN_CELL = 14           # 单个音符最小宽度
+MARGIN = 80                         # 页边距 (文字用)
+MUSIC_L = 83                        # 单声部音乐左边界
+MUSIC_L_MV = 103                    # 多声部音乐左边界 (留出声部括弧)
+MUSIC_R = 923                       # 音乐右边界
+
+TITLE_Y = 140                       # 主标题基线
+SUB_Y = 183                         # 副标题基线
+KEY_Y = 187                         # 调号/拍号基线
+TEMPO_Y = 222                       # 速度标记基线
+AUTH_BOTTOM_J = 226                 # 有速度行时作者块的底边
+AUTH_BOTTOM = 196                   # 无速度行时作者块的底边
+AUTH_GAP = 21                       # 作者行间距
+FIRST_GAP = 40                      # 描述头底部 -> 首行第一声部基线
+DYN_PAD = 12                        # 首行上方若有力度记号再让出的空间
+
+TITLE_SIZE = 36
+SUB_SIZE = 20
+AUTH_SIZE = 16
+KEY_SIZE = 27
+PAI_SIZE = 16
+TEMPO_SIZE = 16
+NOTE_SIZE = 26                      # 音符数字字号
+LYRIC_SIZE = 18                     # 歌词字号
+ANNOT_SIZE = 16                     # 歌词注释(段落号)字号
+SMALL = 13                          # 记号/注释小字号
+DOT_R = 1.7                         # 八度点半径
+FUDIAN_DX = 11                      # 附点相对音符中心的水平偏移
+
+VOICE_GAP = 78                      # 同一组内相邻声部的基线间距
+LYRIC_OFF = 44                      # 最后一声部基线 -> 首行歌词基线
+LYRIC_LINE = 28                     # 歌词行间距
+
+BAR_UP = 14                         # 小节线高出音符基线
+BAR_DN = 13                         # 小节线低于音符基线
+UL_Y = 12                           # 第一条减时线相对基线的偏移
+UL_GAP = 5                          # 减时线间距
+OCT_HIGH = 13                       # 高八度点相对基线的偏移
+OCT_LOW = 13                        # 低八度点相对基线的偏移
+OCT_STEP = 9                        # 多个八度点的间距
+
+# 相邻元素之间的"时值系数": 行宽 / 系数和 = 单位宽度
+UNIT_SAME_BEAM = 1.0                # 同一拍内的减时线音符
+UNIT_BAR = 1.4                      # 与小节线相邻
 
 
 def is_punct(ch):
@@ -116,6 +157,11 @@ class NoteEl(object):
         return self.pitch is not None and not self.is_hold
 
     @property
+    def sung(self):
+        # 是否是一个可发声的音符 (用于歌词/记号定位)
+        return self.pitch is not None
+
+    @property
     def dynamics(self):
         return [m for m in self.marks if m in ("pp", "p", "mp", "mf",
                                                "f", "ff", "fff", "sf",
@@ -145,10 +191,6 @@ class BarEl(object):
         self.sbf = False           # &sbf 声部括弧起始
         self.opens = 0             # 小节线处的连音线开始
         self.closes = 0            # 小节线处的连音线结束
-
-    @property
-    def width(self):
-        return BAR_RATIO
 
 
 class QLine(object):
@@ -189,70 +231,73 @@ class Header(object):
 
 
 class LyricLine(object):
-    """一行歌词, 解析为与音符槽位一一对应的文字列表。"""
+    """一行歌词, 解析为一个个"槽位记号"。
+
+    tokens 里每个元素要么是字符串(该槽位要显示的歌词), 要么是 None(表示
+    脚本里的 ``@``, 即"跳过一个音符")。汉字一字一槽, 标点自动并入前一个
+    槽位, ``~`` 把下一个字并入当前槽位, 英文单词以 ``/`` 分隔。
+    """
 
     def __init__(self, voice, text):
         self.voice = voice
         self.raw = text
-        self.notes = []
+        self.tokens = []
         self.annotation = ""
         self.parse()
 
     def parse(self):
         text = self.raw
-        out = []
         i = 0
         n = len(text)
-        m = re.match(r'^\s*"([^"]*)"', text)
-        if m:
-            self.annotation = m.group(1).replace("_", " ")
-            i = m.end()
+        # 前导 @ (空槽) 之后可以跟一个引号注释, 例如 @"1、"奇异恩典...
+        while i < n and text[i] in " \t@":
+            if text[i] == "@":
+                self.tokens.append(None)
+            i += 1
+        if i < n and text[i] == '"':
+            j = text.find('"', i + 1)
+            if j < 0:
+                j = n
+            self.annotation = text[i + 1:j].replace("_", " ")
+            i = j + 1
         while i < n:
             c = text[i]
             if c in " \t":
                 i += 1
-                continue
-            if c == '"':
+            elif c == '"':
                 j = text.find('"', i + 1)
                 i = (j + 1) if j >= 0 else n
-                continue
-            if c == "@":
-                out.append("")
+            elif c == "@":
+                self.tokens.append(None)
                 i += 1
-                continue
-            if c in "{}":
+            elif c in "{}":
                 i += 1
-                continue
-            if c == "-":
+            elif c in "-/":
                 i += 1
-                continue
-            if c == "~":
-                if out and i + 1 < n:
-                    out[-1] += text[i + 1]
-                    i += 2
-                else:
+            elif c == "~":
+                i += 1
+                if i < n and self.tokens and self.tokens[-1] is not None:
+                    self.tokens[-1] += text[i]
                     i += 1
-                continue
-            if c == "/":
-                i += 1
-                continue
-            if c.isascii() and c.isalpha():
+                elif i < n:
+                    self.tokens.append(text[i])
+                    i += 1
+            elif c.isascii() and c.isalpha():
                 j = i
-                while j < n and text[j].isascii() and text[j].isalpha():
+                while j < n and text[j].isascii() and (text[j].isalpha()
+                                                       or text[j] in "'’"):
                     j += 1
-                out.append(text[i:j])
+                self.tokens.append(text[i:j])
                 i = j
-                continue
-            if is_punct(c):
-                if out:
-                    out[-1] += c
+            elif is_punct(c):
+                if self.tokens and self.tokens[-1] is not None:
+                    self.tokens[-1] += c
                 else:
-                    out.append(c)
+                    self.tokens.append(c)
                 i += 1
-                continue
-            out.append(c)
-            i += 1
-        self.notes = out
+            else:
+                self.tokens.append(c)
+                i += 1
 
 
 # --------------------------------------------------------------------------
@@ -493,10 +538,10 @@ def parse_bar(tok):
         elif c == "|":
             el.lines += 1
         elif c == ":":
-            if el.lines > 0:
-                el.right_rep = True
-            else:
+            if i > 0 and tok[i - 1] == "|":
                 el.left_rep = True
+            else:
+                el.right_rep = True
         elif c == "/":
             if last_bracket:
                 el.house_unclosed = True
@@ -570,10 +615,54 @@ def parse_block(tok):
         if kind == "bar":
             els.append(parse_bar(t))
         elif kind == "note":
-            el = parse_note(t)
-            if el.pitch is not None:
-                els.append(el)
-    return els
+            els.append(parse_note(t))
+    return merge_elements(els)
+
+
+def merge_elements(raw):
+    """整理元素列表：
+
+    * 丢弃纯记号(无音高)token，把其连音线起止/多连音信息并入相邻音符；
+    * 例如 `3 (// 4//)` 中的 `(//` 合并到前一个音符 `3` 上。
+    """
+    merged = []
+    pending_opens = 0
+    pending_multi = False
+    for el in raw:
+        if isinstance(el, NoteEl) and el.pitch is None:
+            prev = None
+            if (merged and isinstance(merged[-1], NoteEl)
+                    and merged[-1].pitch is not None):
+                prev = merged[-1]
+            if prev is not None:
+                # 记号 token 的时值/记号信息归属前一个音符,
+                # 例如 `5 (.` => 附点四分音符, `3 (//` => 十六分音符。
+                prev.dots += el.dots
+                prev.slashes += el.slashes
+                if el.acc and not prev.acc:
+                    prev.acc = el.acc
+                prev.grace_front += el.grace_front
+                prev.grace_back += el.grace_back
+                prev.marks += el.marks
+                if el.text and not prev.text:
+                    prev.text = el.text
+                prev.opens += el.opens
+                prev.multi = prev.multi or el.multi
+                prev.closes += el.closes
+            else:
+                if el.opens:
+                    pending_opens += el.opens
+                    pending_multi = pending_multi or el.multi
+                if el.closes and merged and isinstance(merged[-1], NoteEl):
+                    merged[-1].closes += el.closes
+            continue
+        if isinstance(el, NoteEl) and pending_opens:
+            el.opens += pending_opens
+            el.multi = el.multi or pending_multi
+            pending_opens = 0
+            pending_multi = False
+        merged.append(el)
+    return merged
 
 
 def parse_jps(text):
@@ -615,17 +704,15 @@ def parse_jps(text):
                     if voice <= maxv:
                         flush_group()
                 q = QLine(voice, name)
+                raw = []
                 for kind2, tok in tokenize(body):
                     if kind2 == "bar":
-                        q.elements.append(parse_bar(tok))
+                        raw.append(parse_bar(tok))
                     elif kind2 == "block":
-                        q.elements.extend(parse_block(tok))
+                        raw.extend(parse_block(tok))
                     else:
-                        el = parse_note(tok)
-                        if el.pitch is None and not (
-                                el.opens or el.closes):
-                            continue
-                        q.elements.append(el)
+                        raw.append(parse_note(tok))
+                q.elements = merge_elements(raw)
                 qgroup.append(q)
             else:
                 lyrics.append(LyricLine(voice, body))
@@ -656,6 +743,32 @@ def parse_jps(text):
 
 
 # --------------------------------------------------------------------------
+# 时值 / 系数计算
+# --------------------------------------------------------------------------
+def duration(el):
+    """返回以四分音符为 1 拍的时值。"""
+    d = 2.0 ** (-el.slashes)
+    if el.dots:
+        d *= 2 - 2.0 ** (-el.dots)
+    return d
+
+
+def coef(a, b, onset_a=None, onset_b=None):
+    """两个相邻元素之间的时值系数 (相对单位宽度)。"""
+    if isinstance(a, BarEl) or isinstance(b, BarEl):
+        return UNIT_BAR
+    ta, tb = duration(a), duration(b)
+    if (a.slashes > 0 and b.slashes > 0 and onset_a is not None
+            and onset_b is not None and int(onset_a) == int(onset_b)):
+        return UNIT_SAME_BEAM
+    # 非同一拍的相邻音符至少留出 1.5 个单位宽度
+    c = max(1.5, 0.5 + max(ta, tb))
+    # 倚音需要额外空间
+    c += 0.6 * len(b.grace_front)
+    return c
+
+
+# --------------------------------------------------------------------------
 # 渲染
 # --------------------------------------------------------------------------
 class Renderer(object):
@@ -663,41 +776,51 @@ class Renderer(object):
         self.header = header
         self.page_w, self.page_h = PAGE_SIZES.get(
             header.page, PAGE_SIZES["A4"])
-        self.margin = 80
-        self.content_w = self.page_w - 2 * self.margin
+        self.k = self.page_w / REF_W        # 相对 A4 的缩放系数
         self.pages = []
         self.page_index = -1
         self._outfile = "out.svg"
+        self.y = 0.0
+        self._first_base = 0.0
 
     # ---- 底层绘制辅助 -------------------------------------------------
     @staticmethod
-    def text(dwg, s, x, y, size=NOTE_SIZE, anchor="middle",
-             family=FONT_NOTE, fill="#101010", weight="normal",
-             style="normal"):
-        dwg.add(dwg.text(s, insert=(x, y), font_size="%.1fpx" % size,
-                         font_family=family, text_anchor=anchor,
-                         fill=fill, font_weight=weight, font_style=style))
+    def _svg_text(dwg, s, x, y, size, anchor="middle", family=FONT_NOTE,
+                  fill="#1b1b1b", weight="normal", style="normal"):
+        dwg.add(dwg.text(s, insert=(x, y),
+                         font_size="%.2fpx" % size, font_family=family,
+                         text_anchor=anchor, fill=fill, font_weight=weight,
+                         font_style=style))
 
-    @staticmethod
-    def line(dwg, x1, y1, x2, y2, width=1.4):
-        dwg.add(dwg.line(start=(x1, y1), end=(x2, y2),
-                         stroke="#101010", stroke_width=width,
-                         stroke_linecap="round"))
+    def text(self, s, x, y, size, anchor="middle", family=FONT_NOTE,
+             fill="#1b1b1b", weight="normal", style="normal"):
+        self._svg_text(self.dwg, s, x, y, size, anchor, family, fill,
+                       weight, style)
 
-    @staticmethod
-    def dot(dwg, x, y, r=DOT_R):
-        dwg.add(dwg.circle(center=(x, y), r=r, fill="#101010"))
+    def line(self, x1, y1, x2, y2, width=1.5):
+        self.dwg.add(self.dwg.line(start=(x1, y1), end=(x2, y2),
+                                   stroke="#1b1b1b",
+                                   stroke_width="%.2fpx" % width,
+                                   stroke_linecap="round"))
+
+    def dot(self, x, y, r=None):
+        if r is None:
+            r = DOT_R * self.k
+        self.dwg.add(self.dwg.circle(center=(x, y), r="%.2fpx" % r,
+                                     fill="#1b1b1b"))
 
     # ---- 主入口 -------------------------------------------------------
     def render(self, items, outfile):
         self._outfile = outfile
         self._new_page()
-        self.y = self.margin
-        self._render_header()
+        bottom = self._render_header()
+        self._page_top = MARGIN * self.k
+        self._first_base = bottom + FIRST_GAP * self.k
+        self.y = self._first_base
         for item in items:
             if item[0] == "pagebreak":
                 self._new_page()
-                self.y = self.margin
+                self.y = self._page_top
             else:
                 self._render_system(item[1], item[2])
         return self.pages
@@ -723,184 +846,300 @@ class Renderer(object):
 
     # ---- 描述头 -------------------------------------------------------
     def _render_header(self):
+        k = self.k
+        h = self.header
         dwg = self.dwg
-        margin = self.margin
-        y = self.y + 24
-        for i, title in enumerate(self.header.titles):
-            size = 36 if i == 0 else 20
-            self.text(dwg, title, self.page_w / 2, y, size=size,
-                      family=FONT_SANS, weight="bold")
-            y += 40 if i == 0 else 28
-        ay = self.y + 34
-        for author in self.header.authors:
-            self.text(dwg, author, self.page_w - margin, ay, size=16,
-                      anchor="end", family=FONT_SANS)
-            ay += 22
-        y += 8
-        if self.header.key:
-            acc = {"#": "\u266f", "$": "\u266d"}.get(self.header.key_acc, "")
-            self.text(dwg, "1=%s%s" % (acc, self.header.key), margin, y + 18,
-                      size=20, anchor="start", family=FONT_NOTE, weight="bold")
-        if self.header.pai:
-            parts = self.header.pai.split("/")
-            if len(parts) == 2:
-                px = margin + 104
-                self.text(dwg, parts[0], px, y + 10, size=17,
-                          family=FONT_NOTE, weight="bold")
-                self.text(dwg, parts[1], px, y + 30, size=17,
-                          family=FONT_NOTE, weight="bold")
-                self._line_under_pai(px, y + 20)
-                self.text(dwg, self.header.tempo, px + 30, y + 22, size=15,
+        if h.titles:
+            self.text(h.titles[0], self.page_w / 2.0, TITLE_Y * k,
+                      TITLE_SIZE * k, family=FONT_SANS, weight="bold")
+            for i, t in enumerate(h.titles[1:], 1):
+                self.text(t, self.page_w / 2.0,
+                          (SUB_Y + (i - 1) * 26) * k, SUB_SIZE * k,
+                          family=FONT_SANS)
+        has_j = bool(h.tempo)
+        bottom = (AUTH_BOTTOM_J if has_j else AUTH_BOTTOM) * k
+        na = len(h.authors)
+        for i, a in enumerate(h.authors):
+            y = bottom - (AUTH_GAP * (na - 1 - i) + 3) * k
+            self.text(a, MUSIC_R * k, y, AUTH_SIZE * k, anchor="end",
+                      family=FONT_SANS)
+        # 调号
+        if h.key:
+            acc = {"#": "\u266f", "$": "\u266d"}.get(h.key_acc, "")
+            self.text("1=", MARGIN * k, KEY_Y * k, KEY_SIZE * k,
+                      anchor="start", family=FONT_NOTE, weight="bold")
+            x = MARGIN * k + 36 * k
+            if acc:
+                self.text(acc, MARGIN * k + 30 * k, (KEY_Y - 10) * k,
+                          KEY_SIZE * k * 0.62, anchor="start", family=FONT_NOTE)
+            self.text(h.key, x, KEY_Y * k, KEY_SIZE * k,
+                      anchor="start", family=FONT_NOTE, weight="bold")
+        # 拍号
+        if h.pai and "/" in h.pai:
+            num, den = h.pai.split("/", 1)
+            px = MARGIN * k + 64 * k
+            self.text(num, px, (KEY_Y - 17) * k, PAI_SIZE * k,
+                      family=FONT_NOTE, weight="bold")
+            self.text(den, px, (KEY_Y + 8) * k, PAI_SIZE * k,
+                      family=FONT_NOTE, weight="bold")
+            self.line(px - 8 * k, (KEY_Y - 11) * k, px + 8 * k,
+                      (KEY_Y - 11) * k, 1.0 * k)
+            if h.pai_aux:
+                self.text(h.pai_aux, px + 13 * k, KEY_Y * k,
+                          SMALL * k, anchor="start", family=FONT_SANS)
+        # 速度
+        if h.tempo:
+            if h.tempo_num:
+                self.text("\u2669= %s" % h.tempo_num, MARGIN * k,
+                          TEMPO_Y * k, TEMPO_SIZE * k, anchor="start",
+                          family=FONT_SANS)
+            else:
+                self.text(h.tempo, MARGIN * k, TEMPO_Y * k, TEMPO_SIZE * k,
                           anchor="start", family=FONT_SANS)
-        self.y = y + 46
+        return bottom
 
-    def _line_under_pai(self, px, y):
-        # 拍号中间的分数线
-        self.line(self.dwg, px - 1, y - 9.5, px + 15, y - 9.5, 1.0)
+    # ---- 行块 (system) -------------------------------------------------
+    @staticmethod
+    def _measure_coefs(notes, bar):
+        """返回一个小节的 (系数列表, 起始拍位置列表)。
 
-    # ---- 行块 (system) 排布 ------------------------------------------
-    def _slot_units(self, el):
-        if isinstance(el, NoteEl):
-            if el.pitch is None:       # 纯连音线标记, 不占宽度
-                return 0.0
-            return 1.0 + GS * (len(el.grace_front) + len(el.grace_back))
-        return 0.0
-
-    def _slot_width(self, el, cell):
-        if isinstance(el, NoteEl):
-            if el.pitch is None:
-                return 0.0
-            return cell * (1.0 + GS * (len(el.grace_front) + len(el.grace_back)))
-        return cell
+        系数列表长度 = len(notes) (若有小节线) 或 len(notes)+1 (虚拟收尾)。
+        """
+        onsets = []
+        t = 0.0
+        for el in notes:
+            onsets.append(t)
+            t += duration(el)
+        seq = list(notes)
+        coefs = []
+        for i in range(len(notes)):
+            nxt = notes[i + 1] if i + 1 < len(notes) else bar
+            oa = onsets[i]
+            ob = onsets[i + 1] if i + 1 < len(notes) else None
+            if nxt is None:
+                coefs.append(UNIT_BAR)      # 虚拟收尾
+            else:
+                coefs.append(coef(notes[i], nxt, oa, ob))
+        if not notes:
+            coefs.append(UNIT_BAR)
+        return coefs, onsets
 
     def _render_system(self, qlines, lyrics):
+        k = self.k
         voices = [q.measures for q in qlines]
-        nmeasures = max(len(v) for v in voices) if voices else 0
-        if nmeasures == 0:
+        nmeas = max(len(v) for v in voices) if voices else 0
+        if nmeas == 0:
             return
-        # 每个小节的音符单位数 (跨声部取最大值), 单位 = 一个基本音符宽度
-        units = []
-        for m in range(nmeasures):
-            best = 0.0
-            for v in voices:
-                if m < len(v):
-                    notes, _bar = v[m]
-                    best = max(best, sum(self._slot_units(el) for el in notes))
-            units.append(best)
-        sumu = sum(units) or 1.0
-        # 求解使整行铺满页面宽度的音符宽度
-        cell = self.content_w / (sumu + BAR_RATIO * nmeasures)
-        cell = max(MIN_CELL, min(cell, 42.0))
-        mw = [u * cell + BAR_RATIO * cell for u in units]
+        nv = len(qlines)
+        nl = len(lyrics)
 
-        nvoices = len(qlines)
-        nlyric = len(lyrics)
+        has_dyn = any(isinstance(el, NoteEl) and el.dynamics
+                      for q in qlines for el in q.elements)
+        has_house = any(isinstance(el, BarEl) and el.house_open
+                        for q in qlines for el in q.elements)
+        at_top = (abs(self.y - self._first_base) < 0.1
+                  or abs(self.y - self._page_top) < 0.1)
+        sys_h = (VOICE_GAP * nv + LYRIC_LINE * nl) * k
+        pad = (DYN_PAD * k) if (has_house or (has_dyn and at_top)) else 0.0
+        if self.y + pad + sys_h > self.page_h - MARGIN * k:
+            self._new_page()
+            self.y = self._page_top
+            pad = 0.0
+        self.y += pad
 
-        # 计算减时线/低音点所需的最大垂直深度, 保证歌词不与减时线重叠
-        depth = 11
+        left = (MUSIC_L_MV if nv > 1 else MUSIC_L) * k
+        right = MUSIC_R * k
+        # 行首若是隐藏休止符 8, 参考实现会整体右移一段; 行首带伴奏左括弧
+        # (&zkh) 时也稍作右移, 给括弧留出位置。
+        first_note = None
         for q in qlines:
             for el in q.elements:
-                if isinstance(el, NoteEl) and el.slashes > 0:
-                    depth = max(depth, 11 + 9 * max(0, -el.octave)
-                                + 8 * (el.slashes - 1))
-        vstep = 46 + depth + 22
+                if isinstance(el, NoteEl):
+                    first_note = el
+                    break
+            if first_note is not None:
+                break
+        if first_note is not None:
+            if first_note.pitch == "8":
+                left += 38 * k
+            elif "zkh" in first_note.marks:
+                left += 9 * k
 
-        # 按小节折行 (正常情况下 cell 已使整行容纳, 仅极长行才会多于一行)
-        rows = []
-        cur = []
-        cur_w = 0.0
-        for m in range(nmeasures):
-            if cur and cur_w + mw[m] > self.content_w + 0.5:
-                rows.append(cur)
-                cur = []
-                cur_w = 0.0
-            cur.append(m)
-            cur_w += mw[m]
-        if cur:
-            rows.append(cur)
+        # --- 1. 每个小节的时值系数, 生成跨声部共享的"时间网格" ---
+        #
+        # 参考实现里同一时刻(onset)的音符在所有声部中 x 坐标相同: 先把各声部
+        # 的 onset 合并, 再用一条公共的系数序列把小节撑满, 每个音符落在自己
+        # onset 对应的位置上。
+        vcoefs = []                     # vcoefs[vi][m] = (coefs, onsets)
+        for v in voices:
+            mm = []
+            for m in range(nmeas):
+                notes, bar = v[m] if m < len(v) else ([], None)
+                mm.append(self._measure_coefs(notes, bar))
+            vcoefs.append(mm)
 
-        for row in rows:
-            row_h = nvoices * vstep + nlyric * LYRIC_LINE_H + 22
-            if self.y + row_h > self.page_h - self.margin:
-                self._new_page()
-                self.y = self.margin
-            self._render_row(qlines, voices, mw, row, lyrics, cell, vstep)
+        def has_notes(m):
+            return any(m < len(voices[vi]) and voices[vi][m][0]
+                       for vi in range(nv))
 
-    def _render_row(self, qlines, voices, mw, row, lyrics, cell, vstep):
-        dwg = self.dwg
-        top = self.y
-        nvoices = len(qlines)
-        nlyric = len(lyrics)
-        row_h = nvoices * vstep + nlyric * LYRIC_LINE_H + 22
+        def lead_coef(m):
+            # 小节线 -> 本小节第一个音符之间的系数。
+            # 行首或上一小节为空(只是行首小节线)时不留空隙。
+            if m == 0 or not has_notes(m - 1):
+                return 0.0
+            return UNIT_BAR
 
-        measure_x = {}
-        x0 = self.margin
-        for m in row:
-            measure_x[m] = x0
-            x0 += mw[m]
+        def cum_lookup(seq, onset):
+            """seq 为 [(onset, 累计系数), ...], 返回 onset 之前的累计系数。"""
+            val = 0.0
+            for t, c in seq:
+                if t <= onset + 1e-9:
+                    val = c
+                else:
+                    break
+            return val
 
-        if nvoices > 1:
-            by1 = top + 16
-            by2 = top + (nvoices - 1) * vstep + 58
-            self.line(dwg, self.margin - 18, by1, self.margin - 18, by2, 1.6)
-            for yy in (by1, by2):
-                self.line(dwg, self.margin - 18, yy, self.margin - 9, yy, 1.6)
+        grid = []                       # grid[m] = 该小节系数总和(含前导)
+        gcum = []                       # gcum[m] = [(onset, 累计系数), ...]
+        for m in range(nmeas):
+            if not has_notes(m):
+                grid.append(0.0)
+                gcum.append([])
+                continue
+            tl = sorted({o for vi in range(nv) if m < len(vcoefs[vi])
+                         for o in vcoefs[vi][m][1]})
+            seq = []
+            acc = 0.0
+            for j, t in enumerate(tl):
+                nxt = tl[j + 1] if j + 1 < len(tl) else None
+                c = None
+                for vi in range(nv):
+                    if m >= len(vcoefs[vi]):
+                        continue
+                    cfs, ons = vcoefs[vi][m]
+                    for i, o in enumerate(ons):
+                        if abs(o - t) > 1e-9:
+                            continue
+                        nxt_o = ons[i + 1] if i + 1 < len(ons) else None
+                        if nxt is None:
+                            if nxt_o is None:
+                                c = cfs[i]
+                        elif nxt_o is not None and abs(nxt_o - nxt) < 1e-9:
+                            c = cfs[i]
+                        if c is not None:
+                            break
+                    if c is not None:
+                        break
+                if c is None:
+                    c = UNIT_BAR
+                if j + 1 < len(tl):
+                    seq.append((tl[j + 1], acc + c))
+                acc += c
+            grid.append(lead_coef(m) + acc)
+            gcum.append(seq)
+        total = sum(grid) or 1.0
+        u = (right - left) / total
 
-        all_slots = []
+        # 小节起点 (= 上一个小节末尾的小节线位置)
+        mstart = []
+        x = left
+        for m in range(nmeas):
+            mstart.append(x)
+            x += grid[m] * u
+        mend = mstart + [right]
+
+        # --- 2. 计算每个声部每个音符的 x 位置 ---
+        pos = []                        # pos[vi][m] = [(x, el), ...]
+        barx = []                       # barx[vi][m] = (x, bar)
+        for vi in range(nv):
+            pv = []
+            bv = []
+            for m in range(nmeas):
+                notes, bar = voices[vi][m] if m < len(voices[vi]) else ([], None)
+                onsets = vcoefs[vi][m][1] if m < len(voices[vi]) else []
+                lead = lead_coef(m)
+                lst = []
+                for i, el in enumerate(notes):
+                    o = onsets[i] if i < len(onsets) else 0.0
+                    px = mstart[m] + (lead + cum_lookup(gcum[m], o)) * u
+                    lst.append((px, el))
+                pv.append(lst)
+                bv.append((mend[m + 1], bar))
+            pos.append(pv)
+            barx.append(bv)
+
+        # --- 3. 绘制各声部 ---
+        slots = []                      # slots[vi] = [(x, y_nb, is_lyric)]
+        idpos = {}                      # id(el) -> (x, y_nb)
         for vi, q in enumerate(qlines):
-            y_nb = top + vi * vstep + 46
-            slots = []
-            slot_no = 0
-            for m in row:
-                if m >= len(voices[vi]):
-                    continue
-                notes, bar = voices[vi][m]
-                placed = []
-                x = measure_x[m]
-                for el in notes:
-                    w = self._slot_width(el, cell)
-                    self._draw_note(el, x, y_nb, cell)
-                    placed.append((x, w, el))
+            nb = self.y + vi * VOICE_GAP * k
+            if nv > 1 and q.name:
+                self.text(q.name, left - 35 * k, nb + 6 * k,
+                          SMALL * k, anchor="end", family=FONT_SANS)
+            sl = []
+            for m in range(nmeas):
+                for (px, el) in pos[vi][m]:
+                    self._draw_note(el, px, nb)
+                    idpos[id(el)] = (px, nb)
                     if el.is_lyric_slot:
-                        slots.append((slot_no, x + w / 2.0, y_nb))
-                        slot_no += 1
-                    x += w
-                self._draw_underlines(placed, y_nb)
+                        sl.append((px, nb, el.closes > 0))
+                self._draw_underlines(pos[vi][m], nb)
+            for m in range(nmeas):
+                bx, bar = barx[vi][m]
                 if bar is not None:
-                    self._draw_bar(bar, measure_x[m] + mw[m] - BAR_RATIO * cell / 2.0,
-                                   y_nb)
-            self._draw_hairpins(qlines[vi], slots, y_nb)
-            all_slots.append(slots)
+                    self._draw_bar(bar, bx, nb)
+            slots.append(sl)
+            self._draw_hairpins(q, idpos, nb)
 
+        # --- 4. 声部括弧 ---
+        if nv > 1:
+            self._draw_voice_bracket(left, self.y, nv, k)
+
+        # --- 5. 连音线 ---
         for vi, q in enumerate(qlines):
-            self._draw_ties(q.elements, all_slots[vi], cell)
+            self._draw_ties(q.elements, idpos, k)
 
-        self._draw_houses(voices, measure_x, mw, row, top)
+        # --- 6. 跳房子 ---
+        self._draw_houses(qlines, mstart, mend, nmeas)
 
-        ly = top + nvoices * vstep + 4
-        lsize = max(11.0, min(LYRIC_SIZE, cell * 0.95))
+        # --- 7. 歌词 ---
+        #
+        # 一字一音: 依次落到第一个声部的音符上。连音线的结束音(右括号 /
+        # ``)`` 结尾的音符)默认不占歌词位; 而 ``@`` 则"吃掉"紧跟其后的一个
+        # 音符(连音线结束音也可以被吃掉)。
+        last_nb = self.y + (nv - 1) * VOICE_GAP * k
+        base_slots = slots[0] if slots else []
         for li, lyric in enumerate(lyrics):
-            vi = lyric.voice - 1
-            if vi < 0 or vi >= nvoices:
-                vi = 0
-            slots = all_slots[vi]
-            if lyric.annotation:
-                self.text(dwg, lyric.annotation,
-                          self.margin - 18, ly + li * LYRIC_LINE_H + 4,
-                          size=lsize * 0.8, anchor="end", family=FONT_SANS)
-            for idx, (slot_no, cx, y_nb) in enumerate(slots):
-                if idx < len(lyric.notes) and lyric.notes[idx]:
-                    self.text(dwg, lyric.notes[idx], cx,
-                              ly + li * LYRIC_LINE_H, size=lsize,
-                              family=FONT_SANS)
-        self.y = top + row_h
+            ly = last_nb + (LYRIC_OFF + li * LYRIC_LINE) * k
+            placed = []
+            cur = 0
+            for tok in lyric.tokens:
+                if tok is None:
+                    if cur < len(base_slots):
+                        cur += 1
+                    continue
+                while cur < len(base_slots) and base_slots[cur][2]:
+                    cur += 1
+                if cur >= len(base_slots):
+                    break
+                placed.append((base_slots[cur][0], tok))
+                cur += 1
+            if lyric.annotation and placed:
+                self.text(lyric.annotation, placed[0][0], ly,
+                          ANNOT_SIZE * k, anchor="end", family=FONT_SANS)
+            for sx, txt in placed:
+                self.text(txt, sx - LYRIC_SIZE * k / 2.0, ly,
+                          LYRIC_SIZE * k, anchor="start", family=FONT_SANS)
+
+        self.y += sys_h
 
     # ---- 减时线(时值线) ----------------------------------------------
-    def _draw_underlines(self, placed, y_nb):
+    def _draw_underlines(self, placed, nb):
+        k = self.k
         i = 0
         n = len(placed)
         while i < n:
-            el = placed[i][2]
+            el = placed[i][1]
             if not (isinstance(el, NoteEl) and el.slashes > 0):
                 i += 1
                 continue
@@ -908,165 +1147,177 @@ class Renderer(object):
             maxslash = 0
             maxlow = 0
             while j < n:
-                e2 = placed[j][2]
+                e2 = placed[j][1]
                 if not (isinstance(e2, NoteEl) and e2.slashes > 0):
                     break
                 maxslash = max(maxslash, e2.slashes)
                 maxlow = max(maxlow, max(0, -e2.octave))
                 j += 1
-            base = y_nb + 11 + 9 * maxlow
-            for k in range(1, maxslash + 1):
-                yy = base + (k - 1) * UL_GAP
+            base = UL_Y
+            for lv in range(1, maxslash + 1):
+                yy = nb + (base + (lv - 1) * UL_GAP) * k
                 s = i
                 while s < j:
-                    if placed[s][2].slashes < k:
+                    if placed[s][1].slashes < lv:
                         s += 1
                         continue
                     t = s
-                    while t < j and placed[t][2].slashes >= k:
+                    while t < j and placed[t][1].slashes >= lv:
                         t += 1
-                    xa = placed[s][0]
-                    xb = placed[t - 1][0] + placed[t - 1][1]
-                    self.line(self.dwg, xa + 1, yy, xb - 1, yy, 1.6)
+                    xa = placed[s][0] - 6 * k
+                    xb = placed[t - 1][0] + 6 * k
+                    self.line(xa, yy, xb, yy, 1.5 * k)
                     s = t
             i = j
 
     # ---- 绘制一个音符 -------------------------------------------------
-    def _draw_note(self, el, x_left, y_nb, cell):
-        if el.pitch is None:          # 仅连音线标记, 无音符可画
+    def _draw_note(self, el, cx, nb):
+        if el.pitch is None or el.pitch == "8":
             return
-        dwg = self.dwg
-        fs = max(13.0, min(NOTE_SIZE, cell * 0.8))
-        gw = cell * GS
-        gx = x_left
-        for g in el.grace_front:
-            self._draw_grace(g, gx + gw / 2.0, y_nb, fs * 0.6)
-            gx += gw
-        cx = x_left + gw * len(el.grace_front) + cell / 2.0
-
+        k = self.k
+        fs = NOTE_SIZE * k
+        base = nb + fs * 0.36
         if el.is_hold:
-            self.line(dwg, cx - cell * 0.28, y_nb - fs * 0.28,
-                      cx + cell * 0.28, y_nb - fs * 0.28, 2.0)
-        elif el.pitch == "8":
-            pass                                   # 隐藏休止符: 不绘制
-        elif el.pitch == "0":
-            self.text(dwg, "0", cx, y_nb, size=fs, family=FONT_NOTE,
-                      weight="bold")
+            self.line(cx - 7 * k, nb, cx + 7 * k, nb, 1.8 * k)
         elif el.pitch == "9":
-            self.text(dwg, "X", cx, y_nb, size=fs, family=FONT_NOTE,
-                      weight="bold")
+            self.text("X", cx, base, fs, family=FONT_NOTE, weight="bold")
         else:
-            self.text(dwg, el.pitch, cx, y_nb, size=fs, family=FONT_NOTE,
+            self.text(el.pitch, cx, base, fs, family=FONT_NOTE,
                       weight="bold")
 
-        if el.pitch != "8" and not el.is_hold:
-            if el.acc:
-                sym = {"#": "\u266f", "$": "\u266d",
-                       "=": "\u266e"}.get(el.acc, el.acc)
-                self.text(dwg, sym, cx - fs * 0.42, y_nb - fs * 0.25,
-                          size=fs * 0.58, family=FONT_NOTE)
-            for k in range(el.octave):
-                self.dot(dwg, cx, y_nb - fs * 0.47 - fs * 0.34 * k)
-            for k in range(-el.octave):
-                self.dot(dwg, cx, y_nb + fs * 0.37 + fs * 0.34 * k)
-            for k in range(el.dots):
-                self.dot(dwg, cx + fs * 0.45 + fs * 0.22 * k,
-                         y_nb - fs * 0.2)
-            if el.text:
-                self.text(dwg, el.text, cx, y_nb - fs * 1.05,
-                          size=SMALL, family=FONT_SANS)
-            self._draw_articulation(el, cx, y_nb, fs)
+        if el.pitch == "9":
+            pass
+        if el.acc:
+            sym = {"#": "\u266f", "$": "\u266d",
+                   "=": "\u266e"}.get(el.acc, el.acc)
+            self.text(sym, cx - fs * 0.62, base - fs * 0.28,
+                      fs * 0.6, family=FONT_NOTE)
+        # 八度点
+        low_y = nb + (UL_Y + 5 + max(0, el.slashes - 1) * UL_GAP
+                      if el.slashes else OCT_LOW) * k
+        for i in range(el.octave):
+            self.dot(cx, nb - (OCT_HIGH + i * OCT_STEP) * k)
+        for i in range(-el.octave):
+            self.dot(cx, low_y + i * OCT_STEP * k)
+        # 附点
+        for i in range(el.dots):
+            self.dot(cx + (FUDIAN_DX + i * 7) * k, nb + 4 * k, DOT_R * k * 1.1)
+        # 倚音
+        for i, g in enumerate(el.grace_front):
+            self._draw_grace(g, cx - (12 + i * 9) * k, nb, fs * 0.55)
+        for i, g in enumerate(el.grace_back):
+            self._draw_grace(g, cx + (12 + i * 9) * k, nb, fs * 0.55)
+        # 音符注释
+        if el.text:
+            self.text(el.text, cx, nb - 22 * k, SMALL * k, family=FONT_SANS)
+        # 力度/记号
+        self._draw_marks(el, cx, nb, fs)
 
-        bx = x_left + gw * len(el.grace_front) + cell
-        for g in el.grace_back:
-            self._draw_grace(g, bx + gw / 2.0, y_nb, fs * 0.6)
-            bx += gw
-
-    def _draw_articulation(self, el, cx, y_nb, fs):
+    def _draw_marks(self, el, cx, nb, fs):
+        k = self.k
+        dyn = el.dynamics
+        if dyn:
+            self.text(" ".join(dyn), cx, nb - 26 * k, SMALL * k,
+                      family="'Times New Roman',serif", style="italic")
         for a in el.articulations:
-            y = y_nb - fs * 1.02
+            y = nb - 22 * k
             if a in ("yc", "bc"):
-                self.line(self.dwg, cx - fs * 0.32, y, cx + fs * 0.32, y, 1.2)
+                self.line(cx - 5 * k, y, cx + 5 * k, y, 1.2 * k)
             elif a == "dy":
-                self.dot(self.dwg, cx, y, 2.2)
+                self.dot(cx, y, 1.8 * k)
             elif a == "zy":
-                self.text(self.dwg, ">", cx, y, size=fs * 0.55, family=FONT_NOTE)
+                self.text(">", cx, y, fs * 0.6, family=FONT_NOTE)
             elif a == "hx":
-                self.text(self.dwg, ",", cx, y, size=fs * 0.55, family=FONT_NOTE)
-            elif a == "zkh":        # 伴奏左括弧
-                self.text(self.dwg, "(", cx + fs * 0.32, y_nb + fs * 0.16,
-                          size=fs * 1.7, family=FONT_NOTE)
-            elif a == "ykh":        # 伴奏右括弧
-                self.text(self.dwg, ")", cx - fs * 0.32, y_nb + fs * 0.16,
-                          size=fs * 1.7, family=FONT_NOTE)
+                self.text(",", cx, y, fs * 0.6, family=FONT_NOTE)
+            elif a == "zkh":            # 伴奏左括弧
+                self._paren(cx - 11 * k, nb, -1)
+            elif a == "ykh":            # 伴奏右括弧
+                self._paren(cx + 9 * k, nb, 1)
             else:
-                self.text(self.dwg, a, cx, y, size=SMALL,
+                self.text(a, cx, y, SMALL * k,
                           family="'Times New Roman',serif", style="italic")
 
-    def _draw_grace(self, grp, cx, y_nb, size):
+    def _paren(self, x, nb, direc):
+        """绘制一个细长的大括弧 (伴奏 &zkh / &ykh)。"""
+        k = self.k
+        top = nb - 40 * k
+        bot = nb + 20 * k
+        mid = (top + bot) / 2.0
+        bulge = 8 * k * direc
+        d = "M %.2f %.2f Q %.2f %.2f %.2f %.2f" % (
+            x, top, x + bulge, mid, x, bot)
+        self.dwg.add(self.dwg.path(d=d, fill="none", stroke="#1b1b1b",
+                                   stroke_width="%.2fpx" % (1.3 * k)))
+
+    def _draw_grace(self, grp, cx, nb, size):
         inner = grp.strip("[]")
         if inner.startswith("h"):
             inner = inner[1:]
         nums = [c for c in inner if c.isdigit()]
         if not nums:
             return
-        self.text(self.dwg, nums[-1], cx, y_nb - size * 0.28,
-                  size=max(size, 11), family=FONT_NOTE)
+        k = self.k
+        self.text(nums[-1], cx, nb - 10 * k, max(size, 10 * k),
+                  family=FONT_NOTE)
 
     # ---- 绘制小节线 ---------------------------------------------------
-    def _draw_bar(self, bar, cx, y_nb):
+    def _draw_bar(self, bar, cx, nb):
         if bar.hide:
             return
-        dwg = self.dwg
-        y1 = y_nb - 26
-        y2 = y_nb + 18
-        draw = not (bar.house_open and not bar.lines)
-        if draw:
-            if bar.lines >= 2:
-                self.line(dwg, cx - 4, y1, cx - 4, y2, 1.4)
-                self.line(dwg, cx + 3, y1, cx + 3, y2, 3.0)
-            elif bar.left_rep and bar.right_rep:
-                self.line(dwg, cx - 9, y1, cx - 9, y2, 1.4)
-                self.line(dwg, cx - 3, y1, cx - 3, y2, 3.0)
-                self.line(dwg, cx + 7, y1, cx + 7, y2, 3.0)
-                self.line(dwg, cx + 13, y1, cx + 13, y2, 1.4)
-                self.dot(dwg, cx + 3, y_nb - 6)
-                self.dot(dwg, cx + 3, y_nb + 4)
-            elif bar.right_rep:
-                self.dot(dwg, cx - 8, y_nb - 6)
-                self.dot(dwg, cx - 8, y_nb + 4)
-                self.line(dwg, cx - 2, y1, cx - 2, y2, 1.4)
-                self.line(dwg, cx + 4, y1, cx + 4, y2, 3.0)
-            elif bar.left_rep:
-                self.line(dwg, cx - 4, y1, cx - 4, y2, 3.0)
-                self.line(dwg, cx + 3, y1, cx + 3, y2, 1.4)
-                self.dot(dwg, cx + 8, y_nb - 6)
-                self.dot(dwg, cx + 8, y_nb + 4)
-            else:
-                self.line(dwg, cx, y1, cx, y2, 1.4)
+        k = self.k
+        y1 = nb - BAR_UP * k
+        y2 = nb + BAR_DN * k
+        w = 1.5 * k
+        dots = bar.left_rep or bar.right_rep
+        # 竖线
+        if bar.lines >= 2:
+            self.line(cx - 1 * k, y1, cx - 1 * k, y2, w)
+            self.line(cx + 4 * k, y1, cx + 4 * k, y2, 4.0 * k)
+        elif bar.left_rep and bar.right_rep:
+            self.line(cx - 3 * k, y1, cx - 3 * k, y2, w)
+        elif bar.right_rep:
+            self.line(cx + 1 * k, y1, cx + 1 * k, y2, w)
+            self.line(cx + 6 * k, y1, cx + 6 * k, y2, 4.0 * k)
+        elif bar.left_rep:
+            self.line(cx - 6 * k, y1, cx - 6 * k, y2, 4.0 * k)
+            self.line(cx - 1 * k, y1, cx - 1 * k, y2, w)
+        else:
+            self.line(cx, y1, cx, y2, w)
+        # 反复记号圆点
+        if bar.left_rep:
+            for dy in (-6, 4):
+                self.dot(cx + 4 * k, nb + dy * k, DOT_R * k)
+        if bar.right_rep:
+            for dy in (-6, 4):
+                self.dot(cx - 5 * k, nb + dy * k, DOT_R * k)
+        # 标记与临时拍号
         tagmap = {"dc": "D.C.", "ds": "D.S.", "fine": "Fine",
                   "ty": "\u2192\u2192", "hs": "\u20de"}
         for t in bar.tags:
-            self.text(dwg, tagmap.get(t, t), cx, y_nb - 34, size=SMALL,
+            self.text(tagmap.get(t, t), cx, y1 - 8 * k, SMALL * k,
                       family=FONT_SANS)
-        if bar.pai:
-            p = bar.pai.split("/")
-            if len(p) == 2:
-                self.text(dwg, p[0], cx, y_nb - 30, size=14, family=FONT_NOTE,
-                          weight="bold")
-                self.text(dwg, p[1], cx, y_nb - 16, size=14, family=FONT_NOTE,
-                          weight="bold")
+        if bar.pai and "/" in bar.pai:
+            num, den = bar.pai.split("/", 1)
+            self.text(num, cx, nb - 24 * k, PAI_SIZE * k * 0.9,
+                      family=FONT_NOTE, weight="bold")
+            self.text(den, cx, nb - 8 * k, PAI_SIZE * k * 0.9,
+                      family=FONT_NOTE, weight="bold")
+            self.line(cx - 7 * k, nb - 16 * k, cx + 7 * k, nb - 16 * k,
+                      1.0 * k)
+        _ = dots
+
+    # ---- 声部括弧 -----------------------------------------------------
+    def _draw_voice_bracket(self, left, top, nv, k):
+        y1 = top - BAR_UP * k
+        y2 = top + (nv - 1) * VOICE_GAP * k + BAR_DN * k
+        x = left - 14 * k
+        self.line(x, y1, x, y2, 1.4 * k)
+        self.line(x, y1, x + 7 * k, y1, 1.4 * k)
+        self.line(x, y2, x + 7 * k, y2, 1.4 * k)
 
     # ---- 渐强 / 渐弱 --------------------------------------------------
-    def _draw_hairpins(self, qline, slots, y_nb):
-        xs = {}
-        idx = 0
-        for el in qline.elements:
-            if isinstance(el, NoteEl):
-                if idx < len(slots):
-                    xs[id(el)] = slots[idx][1]
-                if el.is_lyric_slot:
-                    idx += 1
+    def _draw_hairpins(self, qline, idpos, nb):
+        k = self.k
         start = None
         for el in qline.elements:
             if not isinstance(el, NoteEl):
@@ -1074,34 +1325,27 @@ class Renderer(object):
             if el.cresc and start is None:
                 start = el
             if el.cresc_end and start is not None:
-                self._hairpin(start.cresc, xs.get(id(start)),
-                              xs.get(id(el)), y_nb)
+                self._hairpin(start.cresc, idpos.get(id(start)),
+                              idpos.get(id(el)), nb, k)
                 start = None
 
-    def _hairpin(self, cresc, x1, x2, y_nb):
-        if x1 is None or x2 is None:
+    def _hairpin(self, cresc, a, b, nb, k):
+        if a is None or b is None:
             return
-        dwg = self.dwg
         d, plus = cresc
-        y = y_nb - 34 - plus * 7
-        spread = 7
+        x1, x2 = a[0], b[0]
+        y = nb - (30 + plus * 7) * k
+        sp = 6 * k
         if d == "<":
-            pts = [(x1, y), (x2, y - spread), (x2, y + spread), (x1, y)]
+            pts = [(x1, y), (x2, y - sp), (x2, y + sp), (x1, y)]
         else:
-            pts = [(x1, y - spread), (x2, y), (x1, y + spread)]
-        dwg.add(dwg.polyline(points=pts, fill="none", stroke="#101010",
-                             stroke_width=1.1))
+            pts = [(x1, y - sp), (x2, y), (x1, y + sp)]
+        self.dwg.add(self.dwg.polyline(points=pts, fill="none",
+                                       stroke="#1b1b1b",
+                                       stroke_width="%.2fpx" % (1.1 * k)))
 
     # ---- 连音线 -------------------------------------------------------
-    def _draw_ties(self, elements, slots, cell):
-        dwg = self.dwg
-        pos = {}
-        idx = 0
-        for el in elements:
-            if isinstance(el, NoteEl) and el.is_lyric_slot:
-                if idx < len(slots):
-                    pos[id(el)] = slots[idx]
-                idx += 1
+    def _draw_ties(self, elements, idpos, k):
         stack = []
         for el in elements:
             if not isinstance(el, NoteEl):
@@ -1111,50 +1355,53 @@ class Renderer(object):
             for _ in range(el.closes):
                 if stack:
                     a = stack.pop()
-                    if id(a) in pos and id(el) in pos:
-                        self._tie(pos[id(a)], pos[id(el)], len(stack),
-                                  a.multi, cell)
+                    if id(a) in idpos and id(el) in idpos:
+                        self._tie(idpos[id(a)], idpos[id(el)], len(stack),
+                                  a.multi, k)
 
-    def _tie(self, a, b, level, multi, cell):
-        dwg = self.dwg
-        x1, y1 = a[1], a[2]
-        x2, y2 = b[1], b[2]
-        y = min(y1, y2) - 24 - level * 8
+    def _tie(self, a, b, level, multi, k):
+        x1, y1 = a
+        x2, y2 = b
+        y = min(y1, y2) - (17 + level * 7) * k
         mid = (x1 + x2) / 2.0
-        h = 7
-        d = "M %.1f %.1f Q %.1f %.1f %.1f %.1f" % (x1, y, mid, y - h, x2, y)
-        dwg.add(dwg.path(d=d, fill="none", stroke="#101010",
-                         stroke_width=1.2))
+        h = 7 * k
+        d = "M %.2f %.2f Q %.2f %.2f %.2f %.2f" % (x1, y, mid, y - h, x2, y)
+        self.dwg.add(self.dwg.path(d=d, fill="none", stroke="#1b1b1b",
+                                   stroke_width="%.2fpx" % (1.2 * k)))
         if multi:
-            n = int(abs(x2 - x1) / (cell or 1)) + 1
-            self.text(dwg, str(n), mid, y - 6, size=13, family=FONT_NOTE)
+            n = int(abs(x2 - x1) / max(k, 1)) + 1
+            self.text(str(n), mid, y - 5 * k, SMALL * k, family=FONT_NOTE)
 
     # ---- 跳房子 -------------------------------------------------------
-    def _draw_houses(self, voices, measure_x, mw, row, top):
-        dwg = self.dwg
+    def _draw_houses(self, qlines, mstart, mend, nmeas):
+        k = self.k
         open_bar = None
         xa = 0.0
-        for m in row:
-            for v in voices:
-                if m >= len(v):
-                    continue
-                _notes, bar = v[m]
-                if bar is None:
-                    continue
-                if bar.house_open:
-                    open_bar = bar
-                    xa = measure_x[m]
-                if bar.house_close and open_bar is not None:
-                    xb = measure_x[m] + mw[m] - 4
-                    y = top + 6 - open_bar.plus * 6
-                    self.line(dwg, xa, y, xb, y, 1.2)
-                    self.line(dwg, xa, y, xa, y + 16, 1.2)
-                    if not (bar.house_unclosed or open_bar.house_unclosed):
-                        self.line(dwg, xb, y, xb, y + 16, 1.2)
-                    if open_bar.house_text:
-                        self.text(dwg, open_bar.house_text, (xa + xb) / 2,
-                                  y - 4, size=SMALL, family=FONT_SANS)
-                    open_bar = None
+        for m in range(nmeas):
+            bar = None
+            for q in qlines:
+                mm = q.measures
+                if m < len(mm) and mm[m][1] is not None:
+                    bar = mm[m][1]
+                    break
+            if bar is None:
+                continue
+            # 先结束上一个跳房子, 再开启新的 (同一小节线可能既是终点又是起点)
+            if bar.house_close and open_bar is not None:
+                xb = mend[m + 1]
+                y = self.y + (6 - open_bar.plus * 6) * k
+                self.line(xa, y, xb, y, 1.2 * k)
+                self.line(xa, y, xa, y + 14 * k, 1.2 * k)
+                if not (bar.house_unclosed or open_bar.house_unclosed):
+                    self.line(xb, y, xb, y + 14 * k, 1.2 * k)
+                if open_bar.house_text:
+                    self.text(open_bar.house_text + ".", xa + 12 * k,
+                              y - 3 * k, SMALL * k, anchor="start",
+                              family=FONT_SANS)
+                open_bar = None
+            if bar.house_open:
+                open_bar = bar
+                xa = mend[m + 1]
 
 
 # --------------------------------------------------------------------------
