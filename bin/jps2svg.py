@@ -1469,19 +1469,25 @@ class Renderer(object):
                 start = None
 
     def _hairpin(self, cresc, a, b, nb, k):
+        """渐强 (<) / 渐弱 (>) 楔形。
+
+        参考实现用两条独立的开放式斜线 (从尖端出发), 右侧不封口; 范围从
+        起音音符左边 7px 到收音音符右边 7px, 尖端在音符行上方 30px 处,
+        开口半高 5px。
+        """
         if a is None or b is None:
             return
         d, plus = cresc
-        x1, x2 = a[0], b[0]
+        x1 = a[0] - 7 * k               # 起音音符左缘
+        x2 = b[0] + 7 * k               # 收音音符右缘
         y = nb - (30 + plus * 7) * k
-        sp = 6 * k
+        sp = 5.0 * k
         if d == "<":
-            pts = [(x1, y), (x2, y - sp), (x2, y + sp), (x1, y)]
+            ax, bx = x1, x2             # 尖端在左, 向右张开
         else:
-            pts = [(x1, y - sp), (x2, y), (x1, y + sp)]
-        self.dwg.add(self.dwg.polyline(points=pts, fill="none",
-                                       stroke="#1b1b1b",
-                                       stroke_width="%.2fpx" % (1.1 * k)))
+            ax, bx = x2, x1             # 尖端在右, 向左张开
+        self.line(ax, y, bx, y - sp, 1.0 * k)
+        self.line(ax, y, bx, y + sp, 1.0 * k)
 
     # ---- 连音线 -------------------------------------------------------
     def _draw_ties(self, elements, idpos, k):
