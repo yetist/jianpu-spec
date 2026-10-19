@@ -1355,8 +1355,11 @@ class Renderer(object):
                       family="'Times New Roman',serif", style="italic")
         for a in el.articulations:
             y = nb - 22 * k
-            if a in ("yc", "bc"):
-                self.line(cx - 5 * k, y, cx + 5 * k, y, 1.2 * k)
+            if a == "yc":               # 延长记号: 圆点 + 上方细弧
+                self._yanchang(cx, nb)
+            elif a == "bc":             # 保持音记号: 音符上方短横
+                self.line(cx - 5 * k, nb - 14.1 * k,
+                          cx + 5 * k, nb - 14.1 * k, 1.2 * k)
             elif a == "dy":
                 self.dot(cx, y, 1.8 * k)
             elif a == "zy":
@@ -1370,6 +1373,29 @@ class Renderer(object):
             else:
                 self.text(a, cx, y, SMALL * k,
                           family="'Times New Roman',serif", style="italic")
+
+    def _yanchang(self, cx, nb):
+        """延长记号 (&yc)。
+
+        参考实现的 yanchang 字形: 一个小圆点, 上方一条由两段弧组成的细弧
+        (形状像小叶子)。整体挂在音符行上方, 横向跨音符中心左右各 6.1px。
+        """
+        k = self.k
+        x0 = cx - 6.097 * k
+        x1 = cx + 6.097 * k
+        y0 = nb - 14.0 * k              # 弧的两个端点
+        d = ("M %.2f %.2f C %.2f %.2f %.2f %.2f %.2f %.2f "
+             "C %.2f %.2f %.2f %.2f %.2f %.2f Z") % (
+            x0, y0,
+            cx - 2.439 * k, nb - 21.467 * k,
+            cx + 2.439 * k, nb - 21.467 * k,
+            x1, y0,
+            cx + 2.439 * k, nb - 20.72 * k,
+            cx - 2.439 * k, nb - 20.72 * k,
+            x0, y0)
+        self.dwg.add(self.dwg.path(d=d, fill="#1b1b1b", stroke="#1b1b1b",
+                                   stroke_width="%.2fpx" % (1.0 * k)))
+        self.dot(cx, nb - 15.2 * k, 1.2 * k)
 
     def _paren(self, x, nb, direc):
         """绘制伴奏大括弧 (&zkh / &ykh)。
@@ -1491,25 +1517,35 @@ class Renderer(object):
 
     # ---- 连音线 -------------------------------------------------------
     def _draw_ties(self, elements, idpos, k):
-        stack = []
+        stack = []                      # [元素, 内部已收束的连音线条数]
         for el in elements:
             if not isinstance(el, NoteEl):
                 continue
             for _ in range(el.opens):
-                stack.append(el)
+                stack.append([el, 0])
             for _ in range(el.closes):
                 if stack:
-                    a = stack.pop()
+                    a, inner = stack.pop()
+                    # 音符上方若还有记号 (延长/保持/重音/顿音) 或高八度点,
+                    # 连音线要让开; 包住别的连音线时 (内层已收束) 也要更高
+                    marked = any(m in ("yc", "bc", "zy", "dy")
+                                 for n in (a, el) for m in n.articulations)
+                    hi = a.octave > 0 or el.octave > 0
                     if id(a) in idpos and id(el) in idpos:
-                        self._tie(idpos[id(a)], idpos[id(el)], len(stack),
-                                  a.multi, k)
+                        self._tie(idpos[id(a)], idpos[id(el)], inner,
+                                  a.multi, k, marked, hi)
+                    for s in stack:
+                        s[1] += 1
 
-    def _tie(self, a, b, level, multi, k):
+    def _tie(self, a, b, level, multi, k, marked=False, hi=False):
         x1, y1 = a
         x2, y2 = b
-        y = min(y1, y2) - (17 + level * 7) * k
+        # 端点高度基准 16px (参考实现实测 16/24): 高八度点 +5, 上方有记号
+        # +7, 每嵌套一层 +7; 弧顶再比端点高 8px。
+        y = min(y1, y2) - (16 + 5 * (1 if hi else 0)
+                           + 7 * (1 if marked else 0) + 7 * level) * k
         mid = (x1 + x2) / 2.0
-        h = 7 * k
+        h = 16 * k
         d = "M %.2f %.2f Q %.2f %.2f %.2f %.2f" % (x1, y, mid, y - h, x2, y)
         self.dwg.add(self.dwg.path(d=d, fill="none", stroke="#1b1b1b",
                                    stroke_width="%.2fpx" % (1.2 * k)))
