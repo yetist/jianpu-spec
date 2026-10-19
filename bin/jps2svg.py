@@ -120,6 +120,7 @@ UNIT_SHORT = 1.5                    # 前一音符 ≤ 半拍时的间距
 UNIT_LONG = 2.0                     # 前一音符 > 半拍时的间距
 UNIT_BAR = 1.4                      # 与小节线相邻
 UNIT_END = 2.0                      # 行末最后一小节收尾
+UNIT_PAI = 1.0                      # 临时拍号占用的小节内宽度
 
 
 def is_punct(ch):
@@ -806,6 +807,7 @@ class Renderer(object):
         self._outfile = "out.svg"
         self.y = 0.0
         self._first_base = 0.0
+        self._pai_dx = 0.0              # 临时拍号相对小节线的水平偏移
 
     # ---- 底层绘制辅助 -------------------------------------------------
     @staticmethod
@@ -1050,12 +1052,25 @@ class Renderer(object):
             return any(m < len(voices[vi]) and voices[vi][m][0]
                        for vi in range(nv))
 
+        def pai_at(m):
+            """第 m 小节起始小节线上挂着的临时拍号 (写在上一小节收尾小节线上)。"""
+            if m <= 0:
+                return None
+            for vi in range(nv):
+                vv = voices[vi]
+                if m - 1 < len(vv) and vv[m - 1][1] is not None \
+                        and vv[m - 1][1].pai:
+                    return vv[m - 1][1].pai
+            return None
+
         def lead_coef(m):
             # 小节线 -> 本小节第一个音符之间的系数。
             # 行首或上一小节为空(只是行首小节线)时不留空隙。
-            if m == 0 or not has_notes(m - 1):
-                return 0.0
-            return UNIT_BAR
+            c = 0.0 if (m == 0 or not has_notes(m - 1)) else UNIT_BAR
+            # 临时拍号紧贴小节线, 要让出写拍号的宽度, 后面的音符相应右移
+            if pai_at(m):
+                c += UNIT_PAI
+            return c
 
         def cum_lookup(seq, onset):
             """seq 为 [(onset, 累计系数), ...], 返回 onset 之前的累计系数。"""
@@ -1107,6 +1122,8 @@ class Renderer(object):
             gcum.append(seq)
         total = sum(grid) or 1.0
         u = (right - left) / total
+        # 临时拍号画在小节线右侧 UNIT_PAI 个单位宽处 (参考实现实测)
+        self._pai_dx = UNIT_PAI * u
 
         # 小节起点 (= 上一个小节末尾的小节线位置)
         mstart = []
@@ -1416,13 +1433,16 @@ class Renderer(object):
             self.text(tagmap.get(t, t), cx, y1 - 8 * k, SMALL * k,
                       family=FONT_SANS)
         if bar.pai and "/" in bar.pai:
+            # 临时拍号: 与曲谱同高 (分数线落在音符行上), 画在小节线右侧,
+            # 后面音符已因 lead_coef 让出的空间而右移。
             num, den = bar.pai.split("/", 1)
-            self.text(num, cx, nb - 24 * k, PAI_SIZE * k * 0.9,
+            fs = PAI_SIZE * k * 1.1
+            px = cx + self._pai_dx
+            self.text(num, px, nb - 10 * k + fs * 0.35, fs,
                       family=FONT_NOTE, weight="bold")
-            self.text(den, cx, nb - 8 * k, PAI_SIZE * k * 0.9,
+            self.text(den, px, nb + 10 * k + fs * 0.35, fs,
                       family=FONT_NOTE, weight="bold")
-            self.line(cx - 7 * k, nb - 16 * k, cx + 7 * k, nb - 16 * k,
-                      1.0 * k)
+            self.line(px - 6.9 * k, nb, px + 6.9 * k, nb, 1.0 * k)
         _ = dots
 
     # ---- 声部括弧 -----------------------------------------------------
