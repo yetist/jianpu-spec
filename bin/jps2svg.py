@@ -101,6 +101,7 @@ FUDIAN_DX = 11                      # 附点相对音符中心的水平偏移
 VOICE_GAP = 78                      # 同一组内相邻声部的基线间距
 LYRIC_OFF = 44                      # 最后一声部基线 -> 首行歌词基线
 LYRIC_LINE = 28                     # 歌词行间距
+LYRIC_LEAD = 15                     # 声部行与其"贴身"歌词之间的净行距
 
 BAR_UP = 14                         # 小节线高出音符基线
 BAR_DN = 13                         # 小节线低于音符基线
@@ -112,7 +113,10 @@ OCT_STEP = 9                        # 多个八度点的间距
 
 # 相邻元素之间的"时值系数": 行宽 / 系数和 = 单位宽度
 UNIT_SAME_BEAM = 1.0                # 同一拍内的减时线音符
+UNIT_SHORT = 1.5                    # 前一音符 ≤ 半拍时的间距
+UNIT_LONG = 2.0                     # 前一音符 > 半拍时的间距
 UNIT_BAR = 1.4                      # 与小节线相邻
+UNIT_END = 2.0                      # 行末最后一小节收尾
 
 
 def is_punct(ch):
@@ -668,27 +672,38 @@ def merge_elements(raw):
 def parse_jps(text):
     """解析脚本, 返回 (Header, items)。
 
-    items 为列表, 每项是 ('system', [QLine...], [LyricLine...]) 或 ('pagebreak',)。
+    items 为列表, 每项是 ('system', [QLine...], [LyricLine...], order)
+    或 ('pagebreak',)。order 保存声部/歌词在源码中出现的先后次序, 每项为
+    ('Q', qline) 或 ('C', lyric), 供渲染时按源顺序纵向排布。
     """
     header = Header()
     items = []
     qgroup = []
     lyrics = []
+    order = []
 
     def flush_group():
-        nonlocal qgroup, lyrics
+        nonlocal qgroup, lyrics, order
         if qgroup:
-            items.append(("system", qgroup, lyrics))
+            items.append(("system", qgroup, lyrics, order))
         qgroup = []
         lyrics = []
+        order = []
 
+    prev_kind = None
     for raw in text.splitlines():
         line = raw.strip()
-        if not line or line.startswith("#"):
+        if not line:
+            if qgroup:                      # 空行 => 开始新的 system
+                flush_group()
+            prev_kind = None
+            continue
+        if line.startswith("#"):
             continue
         if line == "[fenye]":
             flush_group()
             items.append(("pagebreak",))
+            prev_kind = None
             continue
         m = re.match(r'^(Q|C)(\d*)("([^"]*)")?\s*:(.*)$', line)
         if m:
@@ -697,9 +712,10 @@ def parse_jps(text):
             name = m.group(4) or ""
             body = m.group(5)
             if kind == "Q":
-                if lyrics:            # 上一组已经带歌词, 开始新的 system
-                    flush_group()
-                if qgroup:            # 声部编号回退 => 新的一组
+                # 参考实现: 只有"歌词行之后的声部行"且声部编号回退时,
+                # 才开启新的 system (曲谱中声部编号重新从 1 开始时,
+                # 若上一行仍是声部行, 则属于同一个 system)。
+                if qgroup and prev_kind == "C":
                     maxv = max(v.voice for v in qgroup)
                     if voice <= maxv:
                         flush_group()
@@ -714,8 +730,12 @@ def parse_jps(text):
                         raw.append(parse_note(tok))
                 q.elements = merge_elements(raw)
                 qgroup.append(q)
+                order.append(("Q", q))
             else:
-                lyrics.append(LyricLine(voice, body))
+                lyric = LyricLine(voice, body)
+                lyrics.append(lyric)
+                order.append(("C", lyric))
+            prev_kind = kind
             continue
         m2 = re.match(r"^([VBZDPJXH])\s*:\s*(.*)$", line)
         if m2:
@@ -754,18 +774,19 @@ def duration(el):
 
 
 def coef(a, b, onset_a=None, onset_b=None):
-    """两个相邻元素之间的时值系数 (相对单位宽度)。"""
+    """两个相邻元素之间的时值系数 (相对单位宽度)。
+
+    参考实现里: 同一拍内的相邻减时线音符紧挨着排 (1 个单位); 其余情况按
+    前一个音符的时值给间距 -- 短音符(≤ 半拍) 1.5 个单位, 长音符 2 个单位。
+    """
     if isinstance(a, BarEl) or isinstance(b, BarEl):
         return UNIT_BAR
-    ta, tb = duration(a), duration(b)
     if (a.slashes > 0 and b.slashes > 0 and onset_a is not None
             and onset_b is not None and int(onset_a) == int(onset_b)):
         return UNIT_SAME_BEAM
-    # 非同一拍的相邻音符至少留出 1.5 个单位宽度
-    c = max(1.5, 0.5 + max(ta, tb))
     # 倚音需要额外空间
-    c += 0.6 * len(b.grace_front)
-    return c
+    return (UNIT_SHORT if duration(a) <= 0.5 else UNIT_LONG) \
+        + 0.6 * len(b.grace_front)
 
 
 # --------------------------------------------------------------------------
@@ -822,7 +843,7 @@ class Renderer(object):
                 self._new_page()
                 self.y = self._page_top
             else:
-                self._render_system(item[1], item[2])
+                self._render_system(item[1], item[2], item[3])
         return self.pages
 
     def _new_page(self):
@@ -835,12 +856,12 @@ class Renderer(object):
         self.dwg = dwg
         return dwg
 
-    def _save_page(self, index):
+    def _save_page(self, index, total=1):
         base, ext = os.path.splitext(self._outfile)
-        if index == 0:
+        if total <= 1:
             name = self._outfile
         else:
-            name = "%s-%d%s" % (base, index, ext)
+            name = "%s-%d%s" % (base, index + 1, ext)
         self.pages[index].saveas(name)
         return name
 
@@ -900,7 +921,7 @@ class Renderer(object):
 
     # ---- 行块 (system) -------------------------------------------------
     @staticmethod
-    def _measure_coefs(notes, bar):
+    def _measure_coefs(notes, bar, last=False):
         """返回一个小节的 (系数列表, 起始拍位置列表)。
 
         系数列表长度 = len(notes) (若有小节线) 或 len(notes)+1 (虚拟收尾)。
@@ -910,21 +931,23 @@ class Renderer(object):
         for el in notes:
             onsets.append(t)
             t += duration(el)
-        seq = list(notes)
+        tail = UNIT_END if last else UNIT_BAR
         coefs = []
         for i in range(len(notes)):
             nxt = notes[i + 1] if i + 1 < len(notes) else bar
             oa = onsets[i]
             ob = onsets[i + 1] if i + 1 < len(notes) else None
-            if nxt is None:
-                coefs.append(UNIT_BAR)      # 虚拟收尾
+            if i + 1 == len(notes):
+                coefs.append(tail)          # 收尾(或虚拟收尾)
+            elif nxt is None:
+                coefs.append(tail)
             else:
                 coefs.append(coef(notes[i], nxt, oa, ob))
         if not notes:
-            coefs.append(UNIT_BAR)
+            coefs.append(tail)
         return coefs, onsets
 
-    def _render_system(self, qlines, lyrics):
+    def _render_system(self, qlines, lyrics, order=None):
         k = self.k
         voices = [q.measures for q in qlines]
         nmeas = max(len(v) for v in voices) if voices else 0
@@ -939,9 +962,50 @@ class Renderer(object):
                         for q in qlines for el in q.elements)
         at_top = (abs(self.y - self._first_base) < 0.1
                   or abs(self.y - self._page_top) < 0.1)
-        sys_h = (VOICE_GAP * nv + LYRIC_LINE * nl) * k
+
+        # --- 纵向: 按源码顺序把声部行与歌词行分为若干"簇" ---
+        #
+        # 脚本正文里, 一个声部行连同紧跟在它后面的歌词行构成一个"簇": 歌词
+        # 紧贴该声部下方 (LYRIC_OFF), 同簇内多行歌词按 LYRIC_LINE 递进。簇的
+        # 高度 = 声部行 (VOICE_GAP) + (首行歌词 LYRIC_LEAD) + 其余歌词行。
+        # 当歌词与声部交错(后面还跟着别的声部)时, 参考实现把歌词"贴"进声部
+        # 行距里, 首行歌词只额外占用 LYRIC_LEAD 的高度。
+        seq = order if order else (
+            [("Q", q) for q in qlines] + [("C", ly) for ly in lyrics])
+        qindex = {id(q): i for i, q in enumerate(qlines)}
+        clusters = []                   # [(qline 或 None, [lyric, ...]), ...]
+        for lk, lobj in seq:
+            if lk == "Q":
+                clusters.append([lobj, []])
+            elif clusters:
+                clusters[-1][1].append(lobj)
+            else:
+                clusters.append([None, [lobj]])
+        interleaved = any(clusters[i][1] for i in range(len(clusters) - 1))
+        tight = interleaved or (nv == 1 and nl >= 2)
+        ly_lead = LYRIC_LEAD if tight else LYRIC_LINE
+        sys_h = sum((VOICE_GAP if c[0] is not None else 0.0)
+                    + (ly_lead + LYRIC_LINE * (len(c[1]) - 1) if c[1] else 0.0)
+                    for c in clusters) * k
+        # 版心底部: 用于判断本行是否还能排进当前页。歌词行只需到最后一行的
+        # 字身底部, 不必按整行高度(簇尾的 LYRIC_LEAD)计算。
+        cur = self.y
+        sys_bottom = 0.0
+        for cq, clys in clusters:
+            nb_rel = cur
+            b = nb_rel + (BAR_DN * k if cq is not None else 0.0)
+            if cq is not None:
+                cur += VOICE_GAP * k
+            if clys:
+                b = max(b, nb_rel + (LYRIC_OFF + (len(clys) - 1) * LYRIC_LINE
+                                     + LYRIC_SIZE * 0.5) * k)
+                cur += (ly_lead + LYRIC_LINE * (len(clys) - 1)) * k
+            sys_bottom = max(sys_bottom, b - self.y)
+
         pad = (DYN_PAD * k) if (has_house or (has_dyn and at_top)) else 0.0
-        if self.y + pad + sys_h > self.page_h - MARGIN * k:
+        # 参考实现只在源码里的分页符处换页, 不按版心高度自动折行; 这里仅当
+        # 内容会超出物理页面时兜底另起一页。
+        if self.y + pad + sys_bottom > self.page_h - 20 * k:
             self._new_page()
             self.y = self._page_top
             pad = 0.0
@@ -975,7 +1039,7 @@ class Renderer(object):
             mm = []
             for m in range(nmeas):
                 notes, bar = v[m] if m < len(v) else ([], None)
-                mm.append(self._measure_coefs(notes, bar))
+                mm.append(self._measure_coefs(notes, bar, m == nmeas - 1))
             vcoefs.append(mm)
 
         def has_notes(m):
@@ -1068,11 +1132,34 @@ class Renderer(object):
             pos.append(pv)
             barx.append(bv)
 
-        # --- 3. 绘制各声部 ---
+        # --- 3. 按"簇"自上而下定位声部行与歌词行 ---
+        #
+        # 每个簇占 声部行 + 首行歌词(LYRIC_LEAD/LYRIC_LINE) + 其余歌词行的
+        # 高度; 歌词行基线 = 所属声部基线 + LYRIC_OFF + j*LYRIC_LINE。
+        vy = {}                         # id(qline) -> 音符行基线 y
+        lyric_y = {}                    # id(lyric) -> 歌词行基线 y
+        lyric_anchor = {}               # id(lyric) -> 所属声部序号
+        cursor = self.y
+        for q, lys in clusters:
+            if q is not None:
+                vy[id(q)] = cursor
+                cursor += VOICE_GAP * k
+            nb = vy.get(id(q)) if q is not None else self.y
+            for j, ly in enumerate(lys):
+                lyric_y[id(ly)] = nb + (LYRIC_OFF + j * LYRIC_LINE) * k
+                lyric_anchor[id(ly)] = qindex.get(id(q), 0)
+            if lys:
+                cursor += (ly_lead + LYRIC_LINE * (len(lys) - 1)) * k
+
+        # --- 4. 绘制各声部 ---
         slots = []                      # slots[vi] = [(x, y_nb, is_lyric)]
         idpos = {}                      # id(el) -> (x, y_nb)
+        vtop = None
+        vbot = None
         for vi, q in enumerate(qlines):
-            nb = self.y + vi * VOICE_GAP * k
+            nb = vy.get(id(q), self.y + vi * VOICE_GAP * k)
+            vtop = nb if vtop is None else min(vtop, nb)
+            vbot = nb if vbot is None else max(vbot, nb)
             if nv > 1 and q.name:
                 self.text(q.name, left - 35 * k, nb + 6 * k,
                           SMALL * k, anchor="end", family=FONT_SANS)
@@ -1082,7 +1169,7 @@ class Renderer(object):
                     self._draw_note(el, px, nb)
                     idpos[id(el)] = (px, nb)
                     if el.is_lyric_slot:
-                        sl.append((px, nb, el.closes > 0))
+                        sl.append((px, nb))
                 self._draw_underlines(pos[vi][m], nb)
             for m in range(nmeas):
                 bx, bar = barx[vi][m]
@@ -1091,26 +1178,28 @@ class Renderer(object):
             slots.append(sl)
             self._draw_hairpins(q, idpos, nb)
 
-        # --- 4. 声部括弧 ---
+        # --- 5. 声部括弧 ---
         if nv > 1:
-            self._draw_voice_bracket(left, self.y, nv, k)
+            self._draw_voice_bracket(left, vtop, vbot, k)
 
-        # --- 5. 连音线 ---
+        # --- 6. 连音线 ---
         for vi, q in enumerate(qlines):
             self._draw_ties(q.elements, idpos, k)
 
-        # --- 6. 跳房子 ---
+        # --- 7. 跳房子 ---
         self._draw_houses(qlines, mstart, mend, nmeas)
 
-        # --- 7. 歌词 ---
+        # --- 8. 歌词 ---
         #
-        # 一字一音: 依次落到第一个声部的音符上。连音线的结束音(右括号 /
-        # ``)`` 结尾的音符)默认不占歌词位; 而 ``@`` 则"吃掉"紧跟其后的一个
-        # 音符(连音线结束音也可以被吃掉)。
-        last_nb = self.y + (nv - 1) * VOICE_GAP * k
-        base_slots = slots[0] if slots else []
-        for li, lyric in enumerate(lyrics):
-            ly = last_nb + (LYRIC_OFF + li * LYRIC_LINE) * k
+        # 一字一音: 依次落到所属声部的音符上 (歌词行上方的那个声部)。连音线的
+        # 结束音同样占一个歌词位, 只有源码里的 ``@`` 才会"吃掉"紧跟其后的一个
+        # 音符。
+        for lyric in lyrics:
+            ly = lyric_y.get(id(lyric), self.y)
+            vi = lyric_anchor.get(id(lyric), 0)
+            if not (0 <= vi < len(slots)):
+                vi = 0
+            base_slots = slots[vi] if slots else []
             placed = []
             cur = 0
             for tok in lyric.tokens:
@@ -1118,20 +1207,20 @@ class Renderer(object):
                     if cur < len(base_slots):
                         cur += 1
                     continue
-                while cur < len(base_slots) and base_slots[cur][2]:
-                    cur += 1
                 if cur >= len(base_slots):
                     break
                 placed.append((base_slots[cur][0], tok))
                 cur += 1
             if lyric.annotation and placed:
-                self.text(lyric.annotation, placed[0][0], ly,
+                # 段落号右对齐到首字左缘 (与歌词首字同一 x)
+                self.text(lyric.annotation,
+                          placed[0][0] - LYRIC_SIZE * k / 2.0, ly,
                           ANNOT_SIZE * k, anchor="end", family=FONT_SANS)
             for sx, txt in placed:
                 self.text(txt, sx - LYRIC_SIZE * k / 2.0, ly,
                           LYRIC_SIZE * k, anchor="start", family=FONT_SANS)
 
-        self.y += sys_h
+        self.y = cursor
 
     # ---- 减时线(时值线) ----------------------------------------------
     def _draw_underlines(self, placed, nb):
@@ -1307,9 +1396,9 @@ class Renderer(object):
         _ = dots
 
     # ---- 声部括弧 -----------------------------------------------------
-    def _draw_voice_bracket(self, left, top, nv, k):
+    def _draw_voice_bracket(self, left, top, bottom, k):
         y1 = top - BAR_UP * k
-        y2 = top + (nv - 1) * VOICE_GAP * k + BAR_DN * k
+        y2 = bottom + BAR_DN * k
         x = left - 14 * k
         self.line(x, y1, x, y2, 1.4 * k)
         self.line(x, y1, x + 7 * k, y1, 1.4 * k)
@@ -1417,13 +1506,13 @@ def convert(infile, outfile=None, fmt="svg"):
     svg_out = base + ".svg"
     renderer = Renderer(header)
     renderer.render(items, svg_out)
-    for i in range(len(renderer.pages)):
-        renderer._save_page(i)
+    total = len(renderer.pages)
+    svgs = []
+    for i in range(total):
+        svgs.append(renderer._save_page(i, total))
     if fmt != "svg":
-        for i in range(len(renderer.pages)):
-            svg = svg_out if i == 0 else "%s-%d.svg" % (base, i)
-            out = ("%s.%s" % (base, fmt)) if i == 0 else \
-                  ("%s-%d.%s" % (base, i, fmt))
+        for svg in svgs:
+            out = svg[:-4] + "." + fmt
             os.system("rsvg-convert -f %s -o %s %s" % (fmt, out, svg))
     return renderer.pages
 
