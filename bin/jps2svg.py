@@ -84,6 +84,8 @@ AUTH_BOTTOM = 196                   # 无速度行时作者块的底边
 AUTH_GAP = 21                       # 作者行间距
 FIRST_GAP = 40                      # 描述头底部 -> 首行第一声部基线
 DYN_PAD = 12                        # 首行上方若有力度记号再让出的空间
+HOUSE_PAD = 40                      # 跳房子距音符行的高度 (参考实现实测 40px)
+HOUSE_TICK = 10                     # 跳房子两端竖线下垂高度
 
 TITLE_SIZE = 36
 SUB_SIZE = 20
@@ -1002,7 +1004,8 @@ class Renderer(object):
                 cur += (ly_lead + LYRIC_LINE * (len(clys) - 1)) * k
             sys_bottom = max(sys_bottom, b - self.y)
 
-        pad = (DYN_PAD * k) if (has_house or (has_dyn and at_top)) else 0.0
+        pad = (HOUSE_PAD * k) if has_house \
+            else ((DYN_PAD * k) if (has_dyn and at_top) else 0.0)
         # 参考实现只在源码里的分页符处换页, 不按版心高度自动折行; 这里仅当
         # 内容会超出物理页面时兜底另起一页。
         if self.y + pad + sys_bottom > self.page_h - 20 * k:
@@ -1189,7 +1192,8 @@ class Renderer(object):
             self._draw_ties(q.elements, idpos, k)
 
         # --- 7. 跳房子 ---
-        self._draw_houses(qlines, mstart, mend, nmeas)
+        self._draw_houses(qlines, mstart, mend, nmeas,
+                          vtop if vtop is not None else self.y)
 
         # --- 8. 歌词 ---
         #
@@ -1487,8 +1491,14 @@ class Renderer(object):
             self.text(str(n), mid, y - 5 * k, SMALL * k, family=FONT_NOTE)
 
     # ---- 跳房子 -------------------------------------------------------
-    def _draw_houses(self, qlines, mstart, mend, nmeas):
+    def _draw_houses(self, qlines, mstart, mend, nmeas, nb):
+        """绘制跳房子 (反复跳跃记号)。
+
+        参考实现把横线画在音符行上方 HOUSE_PAD 处, 两端竖线下垂
+        HOUSE_TICK, 房号写在横线下方、房子左端稍右的位置。
+        """
         k = self.k
+        y = nb - HOUSE_PAD * k          # 横线高度 (高于所有上方记号)
         open_bar = None
         xa = 0.0
         for m in range(nmeas):
@@ -1503,15 +1513,14 @@ class Renderer(object):
             # 先结束上一个跳房子, 再开启新的 (同一小节线可能既是终点又是起点)
             if bar.house_close and open_bar is not None:
                 xb = mend[m + 1]
-                y = self.y + (6 - open_bar.plus * 6) * k
                 self.line(xa, y, xb, y, 1.2 * k)
-                self.line(xa, y, xa, y + 14 * k, 1.2 * k)
+                self.line(xa, y, xa, y + HOUSE_TICK * k, 1.2 * k)
                 if not (bar.house_unclosed or open_bar.house_unclosed):
-                    self.line(xb, y, xb, y + 14 * k, 1.2 * k)
+                    self.line(xb, y, xb, y + HOUSE_TICK * k, 1.2 * k)
                 if open_bar.house_text:
-                    self.text(open_bar.house_text + ".", xa + 12 * k,
-                              y - 3 * k, SMALL * k, anchor="start",
-                              family=FONT_SANS)
+                    self.text(open_bar.house_text, xa + 3 * k,
+                              y + (HOUSE_TICK + 6) * k, SMALL * k,
+                              anchor="start", family=FONT_SANS)
                 open_bar = None
             if bar.house_open:
                 open_bar = bar
