@@ -1342,24 +1342,26 @@ class Renderer(object):
             elif a == "hx":
                 self.text(",", cx, y, fs * 0.6, family=FONT_NOTE)
             elif a == "zkh":            # 伴奏左括弧
-                self._paren(cx - 11 * k, nb, -1)
+                self._paren(cx - 14 * k, nb, -1)
             elif a == "ykh":            # 伴奏右括弧
-                self._paren(cx + 9 * k, nb, 1)
+                self._paren(cx + 14 * k, nb, 1)
             else:
                 self.text(a, cx, y, SMALL * k,
                           family="'Times New Roman',serif", style="italic")
 
     def _paren(self, x, nb, direc):
-        """绘制一个细长的大括弧 (伴奏 &zkh / &ykh)。"""
+        """绘制伴奏大括弧 (&zkh / &ykh)。
+
+        参考实现里括弧高约 18px (上下各约 9px), 孤形很浅; 这里按同样尺寸
+        绘制, 使高度与行内音符一致。
+        """
         k = self.k
-        top = nb - 40 * k
-        bot = nb + 20 * k
-        mid = (top + bot) / 2.0
-        bulge = 8 * k * direc
+        h = 9.1 * k                     # 半高 (总高 ≈ 18.2k)
+        bulge = 3.2 * k * direc         # 弧度
         d = "M %.2f %.2f Q %.2f %.2f %.2f %.2f" % (
-            x, top, x + bulge, mid, x, bot)
+            x, nb - h, x + bulge, nb, x, nb + h)
         self.dwg.add(self.dwg.path(d=d, fill="none", stroke="#1b1b1b",
-                                   stroke_width="%.2fpx" % (1.3 * k)))
+                                   stroke_width="%.2fpx" % (1.6 * k)))
 
     def _draw_grace(self, grp, cx, nb, size):
         inner = grp.strip("[]")
