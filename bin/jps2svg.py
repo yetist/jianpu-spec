@@ -86,6 +86,7 @@ FIRST_GAP = 40                      # 描述头底部 -> 首行第一声部基�
 DYN_PAD = 12                        # 首行上方若有力度记号再让出的空间
 HOUSE_PAD = 40                      # 跳房子距音符行的高度 (参考实现实测 40px)
 HOUSE_TICK = 10                     # 跳房子两端竖线下垂高度
+HOUSE_GAP = 4                       # 相邻跳房子共用一个端点时, 两根竖线间的间隙
 
 TITLE_SIZE = 36
 SUB_SIZE = 20
@@ -1496,11 +1497,16 @@ class Renderer(object):
 
         参考实现把横线画在音符行上方 HOUSE_PAD 处, 两端竖线下垂
         HOUSE_TICK, 房号写在横线下方、房子左端稍右的位置。
+
+        相邻两个跳房子共用一个端点 (前一个的终点小节线就是后一个的起点)
+        时, 两根竖线各向自己一侧让出 HOUSE_GAP/2, 避免叠在一条线上。
         """
         k = self.k
         y = nb - HOUSE_PAD * k          # 横线高度 (高于所有上方记号)
+        half = HOUSE_GAP * k / 2.0      # 相邻跳房子各让出的间隙
         open_bar = None
         xa = 0.0
+        last_end = None                 # 上一个跳房子终点所用的小节线位置
         for m in range(nmeas):
             bar = None
             for q in qlines:
@@ -1513,18 +1519,25 @@ class Renderer(object):
             # 先结束上一个跳房子, 再开启新的 (同一小节线可能既是终点又是起点)
             if bar.house_close and open_bar is not None:
                 xb = mend[m + 1]
-                self.line(xa, y, xb, y, 1.2 * k)
+                # 本条小节线上紧接着还要开启下一个跳房子 -> 终点左移
+                xe = xb - (half if bar.house_open else 0.0)
+                self.line(xa, y, xe, y, 1.2 * k)
                 self.line(xa, y, xa, y + HOUSE_TICK * k, 1.2 * k)
                 if not (bar.house_unclosed or open_bar.house_unclosed):
-                    self.line(xb, y, xb, y + HOUSE_TICK * k, 1.2 * k)
+                    self.line(xe, y, xe, y + HOUSE_TICK * k, 1.2 * k)
                 if open_bar.house_text:
                     self.text(open_bar.house_text, xa + 3 * k,
                               y + (HOUSE_TICK + 6) * k, SMALL * k,
                               anchor="start", family=FONT_SANS)
                 open_bar = None
+                last_end = xb
             if bar.house_open:
                 open_bar = bar
-                xa = mend[m + 1]
+                x0 = mend[m + 1]
+                # 上一个跳房子刚在同一个位置结束 -> 起点右移, 两根竖线分开
+                if last_end is not None and abs(x0 - last_end) < 1.0:
+                    x0 += half
+                xa = x0
 
 
 # --------------------------------------------------------------------------
