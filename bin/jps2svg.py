@@ -83,8 +83,13 @@ AUTH_BOTTOM_J = 226                 # 有速度行时作者块的底边
 AUTH_BOTTOM = 196                   # 无速度行时作者块的底边
 AUTH_GAP = 21                       # 作者行间距
 FIRST_GAP = 40                      # 描述头底部 -> 首行第一声部基线
+HEADER_BLANK_DROP = 20              # 描述头里每多一个空行(空 B:/Z: 或空行), 整个
+                                    # 描述头连同上边界一起上移这么多 (参考实测)
 DYN_PAD = 12                        # 首行上方若有力度记号再让出的空间
-HOUSE_PAD = 40                      # 跳房子距音符行的高度 (参考实现实测 40px)
+HOUSE_PAD = 30                      # 跳房子横线距音符行的高度 (参考实现实测)
+HOUSE_STEP = 10                     # "[+" 每多一个 "+", 横线再抬高这么多
+HOUSE_RESERVE = 12                  # 有跳房子时行首额外让出的高度
+HOUSE_CLAMP = 25                    # 跳房子横线至多高到上一行内容底部之上
 HOUSE_TICK = 10                     # 跳房子两端竖线下垂高度
 HOUSE_GAP = 4                       # 相邻跳房子共用一个端点时, 两根竖线间的间隙
 
@@ -103,6 +108,16 @@ FUDIAN_DX = 11                      # 附点相对音符中心的水平偏移
 
 VOICE_GAP = 78                      # 同一组内相邻声部的基线间距
 LYRIC_OFF = 44                      # 最后一声部基线 -> 首行歌词基线
+
+# 音符字体风格: 番茄简谱用 config.js 的 shuzi_font 选择 b/c 两种音符字形,
+# 两者字身高度不同, 所以纵向行距与歌词位置也不同 (脚本本身未记录该设置)。
+# 实测两套参考 SVG 的参数:
+#   b: 声部行距 78, 首行歌词占 28, 歌词基线 = 音符行 + 44
+#   c: 声部行距 68, 首行歌词占 25, 歌词基线 = 音符行 + 41
+NOTE_STYLES = {
+    "b": {"vgap": 78.0, "lead": 28.0, "off": 44.0},
+    "c": {"vgap": 68.0, "lead": 25.0, "off": 41.0},
+}
 LYRIC_LINE = 28                     # 歌词行间距
 LYRIC_LEAD = 15                     # 声部行与其"贴身"歌词之间的净行距
 
@@ -236,6 +251,7 @@ class Header(object):
         self.tempo_num = ""
         self.number = ""
         self.page = "A4"
+        self.header_blanks = 0      # 描述头里的空行数 (空 B:/Z: 行或空行)
 
 
 class LyricLine(object):
@@ -685,6 +701,7 @@ def parse_jps(text):
     qgroup = []
     lyrics = []
     order = []
+    group_numbered = False          # 当前 system 的声部行是否用的是编号写法
 
     def flush_group():
         nonlocal qgroup, lyrics, order
@@ -700,6 +717,9 @@ def parse_jps(text):
         if not line:
             if qgroup:                      # 空行 => 开始新的 system
                 flush_group()
+            elif not items:
+                # 描述头里的空行: 参考实现会因此把整个描述头上提 (实测)
+                header.header_blanks += 1
             prev_kind = None
             continue
         if line.startswith("#"):
@@ -712,16 +732,19 @@ def parse_jps(text):
         m = re.match(r'^(Q|C)(\d*)("([^"]*)")?\s*:(.*)$', line)
         if m:
             kind = m.group(1)
-            voice = int(m.group(2)) if m.group(2) else 1
+            numbered = bool(m.group(2))
+            voice = int(m.group(2)) if numbered else 1
             name = m.group(4) or ""
             body = m.group(5)
             if kind == "Q":
-                # 参考实现: 只有"歌词行之后的声部行"且声部编号回退时,
-                # 才开启新的 system (曲谱中声部编号重新从 1 开始时,
-                # 若上一行仍是声部行, 则属于同一个 system)。
-                if qgroup and prev_kind == "C":
-                    maxv = max(v.voice for v in qgroup)
-                    if voice <= maxv:
+                # 单声部行 ("Q:") 自成一行; 多声部行 ("Q1:","Q2:") 才合并成
+                # 一个 system。已编号的声部行只有在前一行是歌词行、且编号回退
+                # 时, 才开启新的 system (声部编号重新从 1 开始)。
+                if qgroup:
+                    if not numbered or not group_numbered:
+                        flush_group()
+                    elif (prev_kind == "C"
+                          and voice <= max(v.voice for v in qgroup)):
                         flush_group()
                 q = QLine(voice, name)
                 raw = []
@@ -735,6 +758,7 @@ def parse_jps(text):
                 q.elements = merge_elements(raw)
                 qgroup.append(q)
                 order.append(("Q", q))
+                group_numbered = numbered
             else:
                 lyric = LyricLine(voice, body)
                 lyrics.append(lyric)
@@ -747,8 +771,12 @@ def parse_jps(text):
             if key == "V":
                 header.version = val
             elif key == "B":
+                if not val and not items:
+                    header.header_blanks += 1
                 header.titles.append(val)
             elif key == "Z":
+                if not val and not items:
+                    header.header_blanks += 1
                 header.authors.append(val)
             elif key == "D":
                 header.key, header.key_acc = parse_key(val)
@@ -781,7 +809,7 @@ def coef(a, b, onset_a=None, onset_b=None):
     """两个相邻元素之间的时值系数 (相对单位宽度)。
 
     参考实现里: 同一拍内的相邻减时线音符紧挨着排 (1 个单位); 其余情况按
-    前一个音符的时值给间距 -- 短音符(≤ 半拍) 1.5 个单位, 长音符 2 个单位。
+    前一个音符的时值给间距 -- 一拍及以内的音符 1.5 个单位, 更长的 2 个单位。
     """
     if isinstance(a, BarEl) or isinstance(b, BarEl):
         return UNIT_BAR
@@ -789,7 +817,7 @@ def coef(a, b, onset_a=None, onset_b=None):
             and onset_b is not None and int(onset_a) == int(onset_b)):
         return UNIT_SAME_BEAM
     # 倚音需要额外空间
-    return (UNIT_SHORT if duration(a) <= 0.5 else UNIT_LONG) \
+    return (UNIT_LONG if duration(a) > 1.0 else UNIT_SHORT) \
         + 0.6 * len(b.grace_front)
 
 
@@ -797,17 +825,24 @@ def coef(a, b, onset_a=None, onset_b=None):
 # 渲染
 # --------------------------------------------------------------------------
 class Renderer(object):
-    def __init__(self, header):
+    def __init__(self, header, note_font="b"):
         self.header = header
+        st = NOTE_STYLES.get(note_font, NOTE_STYLES["b"])
+        self.vgap = st["vgap"] * 1.0
+        self.style_lead = st["lead"]
+        self.style_tight = (note_font == "c")
+        self.lyric_off = st["off"]
         self.page_w, self.page_h = PAGE_SIZES.get(
             header.page, PAGE_SIZES["A4"])
         self.k = self.page_w / REF_W        # 相对 A4 的缩放系数
         self.pages = []
         self.page_index = -1
+        self._last_bottom = 0.0
         self._outfile = "out.svg"
         self.y = 0.0
         self._first_base = 0.0
         self._pai_dx = 0.0              # 临时拍号相对小节线的水平偏移
+        self._prev_u = None             # 上一行用过的单位宽度
 
     # ---- 底层绘制辅助 -------------------------------------------------
     @staticmethod
@@ -843,12 +878,20 @@ class Renderer(object):
         self._page_top = MARGIN * self.k
         self._first_base = bottom + FIRST_GAP * self.k
         self.y = self._first_base
-        for item in items:
+        self._last_bottom = 0.0
+        # 最后一行 (全曲最后一行谱) 不向右拉伸: 参考实现只在前面各行把
+        # 单位宽度撑到最大, 末行沿用同样的密度, 于是短句就停在左侧。
+        last_sys = None
+        for i, it in enumerate(items):
+            if it[0] != "pagebreak":
+                last_sys = i
+        for i, item in enumerate(items):
             if item[0] == "pagebreak":
                 self._new_page()
                 self.y = self._page_top
             else:
-                self._render_system(item[1], item[2], item[3])
+                self._render_system(item[1], item[2], item[3],
+                                    last=(i == last_sys))
         return self.pages
 
     def _new_page(self):
@@ -875,15 +918,18 @@ class Renderer(object):
         k = self.k
         h = self.header
         dwg = self.dwg
+        # 描述头里的空行(空行或空 B:/Z: 行)会让参考实现把描述头整块上提,
+        # 连带首行谱也跟着上移 (实测 012/015/016 比常规高 20).
+        dy = -HEADER_BLANK_DROP * getattr(h, "header_blanks", 0)
         if h.titles:
-            self.text(h.titles[0], self.page_w / 2.0, TITLE_Y * k,
+            self.text(h.titles[0], self.page_w / 2.0, (TITLE_Y + dy) * k,
                       TITLE_SIZE * k, family=FONT_SANS, weight="bold")
             for i, t in enumerate(h.titles[1:], 1):
                 self.text(t, self.page_w / 2.0,
-                          (SUB_Y + (i - 1) * 26) * k, SUB_SIZE * k,
+                          (SUB_Y + dy + (i - 1) * 26) * k, SUB_SIZE * k,
                           family=FONT_SANS)
         has_j = bool(h.tempo)
-        bottom = (AUTH_BOTTOM_J if has_j else AUTH_BOTTOM) * k
+        bottom = ((AUTH_BOTTOM_J if has_j else AUTH_BOTTOM) + dy) * k
         na = len(h.authors)
         for i, a in enumerate(h.authors):
             y = bottom - (AUTH_GAP * (na - 1 - i) + 3) * k
@@ -892,35 +938,36 @@ class Renderer(object):
         # 调号
         if h.key:
             acc = {"#": "\u266f", "$": "\u266d"}.get(h.key_acc, "")
-            self.text("1=", MARGIN * k, KEY_Y * k, KEY_SIZE * k,
+            self.text("1=", MARGIN * k, (KEY_Y + dy) * k, KEY_SIZE * k,
                       anchor="start", family=FONT_NOTE, weight="bold")
             x = MARGIN * k + 36 * k
             if acc:
-                self.text(acc, MARGIN * k + 30 * k, (KEY_Y - 10) * k,
+                self.text(acc, MARGIN * k + 30 * k, (KEY_Y - 10 + dy) * k,
                           KEY_SIZE * k * 0.62, anchor="start", family=FONT_NOTE)
-            self.text(h.key, x, KEY_Y * k, KEY_SIZE * k,
+            self.text(h.key, x, (KEY_Y + dy) * k, KEY_SIZE * k,
                       anchor="start", family=FONT_NOTE, weight="bold")
         # 拍号
         if h.pai and "/" in h.pai:
             num, den = h.pai.split("/", 1)
             px = MARGIN * k + 64 * k
-            self.text(num, px, (KEY_Y - 17) * k, PAI_SIZE * k,
+            self.text(num, px, (KEY_Y - 17 + dy) * k, PAI_SIZE * k,
                       family=FONT_NOTE, weight="bold")
-            self.text(den, px, (KEY_Y + 8) * k, PAI_SIZE * k,
+            self.text(den, px, (KEY_Y + 8 + dy) * k, PAI_SIZE * k,
                       family=FONT_NOTE, weight="bold")
-            self.line(px - 8 * k, (KEY_Y - 11) * k, px + 8 * k,
-                      (KEY_Y - 11) * k, 1.0 * k)
+            self.line(px - 8 * k, (KEY_Y - 11 + dy) * k, px + 8 * k,
+                      (KEY_Y - 11 + dy) * k, 1.0 * k)
             if h.pai_aux:
-                self.text(h.pai_aux, px + 13 * k, KEY_Y * k,
+                self.text(h.pai_aux, px + 13 * k, (KEY_Y + dy) * k,
                           SMALL * k, anchor="start", family=FONT_SANS)
         # 速度
         if h.tempo:
             if h.tempo_num:
                 self.text("\u2669= %s" % h.tempo_num, MARGIN * k,
-                          TEMPO_Y * k, TEMPO_SIZE * k, anchor="start",
+                          (TEMPO_Y + dy) * k, TEMPO_SIZE * k, anchor="start",
                           family=FONT_SANS)
             else:
-                self.text(h.tempo, MARGIN * k, TEMPO_Y * k, TEMPO_SIZE * k,
+                self.text(h.tempo, MARGIN * k, (TEMPO_Y + dy) * k,
+                          TEMPO_SIZE * k,
                           anchor="start", family=FONT_SANS)
         return bottom
 
@@ -952,7 +999,7 @@ class Renderer(object):
             coefs.append(tail)
         return coefs, onsets
 
-    def _render_system(self, qlines, lyrics, order=None):
+    def _render_system(self, qlines, lyrics, order=None, last=False):
         k = self.k
         voices = [q.measures for q in qlines]
         nmeas = max(len(v) for v in voices) if voices else 0
@@ -963,8 +1010,13 @@ class Renderer(object):
 
         has_dyn = any(isinstance(el, NoteEl) and el.dynamics
                       for q in qlines for el in q.elements)
-        has_house = any(isinstance(el, BarEl) and el.house_open
-                        for q in qlines for el in q.elements)
+        house_plus = 0
+        has_house = False
+        for q in qlines:
+            for el in q.elements:
+                if isinstance(el, BarEl) and el.house_open:
+                    has_house = True
+                    house_plus = max(house_plus, el.plus)
         at_top = (abs(self.y - self._first_base) < 0.1
                   or abs(self.y - self._page_top) < 0.1)
 
@@ -988,8 +1040,11 @@ class Renderer(object):
                 clusters.append([None, [lobj]])
         interleaved = any(clusters[i][1] for i in range(len(clusters) - 1))
         tight = interleaved or (nv == 1 and nl >= 2)
-        ly_lead = LYRIC_LEAD if tight else LYRIC_LINE
-        sys_h = sum((VOICE_GAP if c[0] is not None else 0.0)
+        if self.style_tight:
+            ly_lead = self.style_lead
+        else:
+            ly_lead = LYRIC_LEAD if tight else LYRIC_LINE
+        sys_h = sum((self.vgap if c[0] is not None else 0.0)
                     + (ly_lead + LYRIC_LINE * (len(c[1]) - 1) if c[1] else 0.0)
                     for c in clusters) * k
         # 版心底部: 用于判断本行是否还能排进当前页。歌词行只需到最后一行的
@@ -1000,22 +1055,32 @@ class Renderer(object):
             nb_rel = cur
             b = nb_rel + (BAR_DN * k if cq is not None else 0.0)
             if cq is not None:
-                cur += VOICE_GAP * k
+                cur += self.vgap * k
             if clys:
-                b = max(b, nb_rel + (LYRIC_OFF + (len(clys) - 1) * LYRIC_LINE
+                b = max(b, nb_rel + (self.lyric_off + (len(clys) - 1) * LYRIC_LINE
                                      + LYRIC_SIZE * 0.5) * k)
                 cur += (ly_lead + LYRIC_LINE * (len(clys) - 1)) * k
             sys_bottom = max(sys_bottom, b - self.y)
 
-        pad = (HOUSE_PAD * k) if has_house \
+        pad = (HOUSE_RESERVE * k) if has_house \
             else ((DYN_PAD * k) if (has_dyn and at_top) else 0.0)
         # 参考实现只在源码里的分页符处换页, 不按版心高度自动折行; 这里仅当
         # 内容会超出物理页面时兜底另起一页。
         if self.y + pad + sys_bottom > self.page_h - 20 * k:
             self._new_page()
             self.y = self._page_top
-            pad = 0.0
+            self._last_bottom = 0.0
+            at_top = True
+            pad = (HOUSE_RESERVE * k) if has_house else 0.0
         self.y += pad
+
+        # 跳房子横线: 默认在音符行上方 HOUSE_PAD, 每个 "+" 再抬高 HOUSE_STEP;
+        # 但不得高过上一行内容的底部, 以免与上一行歌词/记号重叠。
+        house_y = None
+        if has_house:
+            house_y = self.y - (HOUSE_PAD + HOUSE_STEP * house_plus) * k
+            if not at_top:
+                house_y = max(house_y, self._last_bottom + HOUSE_CLAMP * k)
 
         left = (MUSIC_L_MV if nv > 1 else MUSIC_L) * k
         right = MUSIC_R * k
@@ -1063,10 +1128,23 @@ class Renderer(object):
                     return vv[m - 1][1].pai
             return None
 
+        # 行首小节线: 谱行以 "|"(或 "|:" 等) 开头时, 第一个音符同样要让出
+        # 小节线到音符的间距; 行首直接是音符时则紧贴左边距。
+        lead_bar0 = None
+        if voices and voices[0] and voices[0][0][1] is not None \
+                and not has_notes(0):
+            lead_bar0 = voices[0][0][1]
+
         def lead_coef(m):
             # 小节线 -> 本小节第一个音符之间的系数。
-            # 行首或上一小节为空(只是行首小节线)时不留空隙。
-            c = 0.0 if (m == 0 or not has_notes(m - 1)) else UNIT_BAR
+            if m == 0:
+                c = 0.0
+            elif not has_notes(m - 1):
+                # 上一小节没有音符: 只有行首小节线后面才让出间距
+                c = (UNIT_BAR if (m - 1 == 0 and lead_bar0 is not None
+                                  and not lead_bar0.hide) else 0.0)
+            else:
+                c = UNIT_BAR
             # 临时拍号紧贴小节线, 要让出写拍号的宽度, 后面的音符相应右移
             if pai_at(m):
                 c += UNIT_PAI
@@ -1122,6 +1200,13 @@ class Renderer(object):
             gcum.append(seq)
         total = sum(grid) or 1.0
         u = (right - left) / total
+        # 末行不拉伸到右边界: 参考实现让末行沿用上一行的单位宽度 (同样的
+        # 疏密), 只有末行自身更密时才用它自己的值。
+        if last:
+            if self._prev_u is not None and u > self._prev_u * 2.0:
+                u = self._prev_u
+        else:
+            self._prev_u = u
         # 临时拍号画在小节线右侧 UNIT_PAI 个单位宽处 (参考实现实测)
         self._pai_dx = UNIT_PAI * u
 
@@ -1131,7 +1216,7 @@ class Renderer(object):
         for m in range(nmeas):
             mstart.append(x)
             x += grid[m] * u
-        mend = mstart + [right]
+        mend = mstart + [x]
 
         # --- 2. 计算每个声部每个音符的 x 位置 ---
         pos = []                        # pos[vi][m] = [(x, el), ...]
@@ -1164,10 +1249,10 @@ class Renderer(object):
         for q, lys in clusters:
             if q is not None:
                 vy[id(q)] = cursor
-                cursor += VOICE_GAP * k
+                cursor += self.vgap * k
             nb = vy.get(id(q)) if q is not None else self.y
             for j, ly in enumerate(lys):
-                lyric_y[id(ly)] = nb + (LYRIC_OFF + j * LYRIC_LINE) * k
+                lyric_y[id(ly)] = nb + (self.lyric_off + j * LYRIC_LINE) * k
                 lyric_anchor[id(ly)] = qindex.get(id(q), 0)
             if lys:
                 cursor += (ly_lead + LYRIC_LINE * (len(lys) - 1)) * k
@@ -1178,7 +1263,7 @@ class Renderer(object):
         vtop = None
         vbot = None
         for vi, q in enumerate(qlines):
-            nb = vy.get(id(q), self.y + vi * VOICE_GAP * k)
+            nb = vy.get(id(q), self.y + vi * self.vgap * k)
             vtop = nb if vtop is None else min(vtop, nb)
             vbot = nb if vbot is None else max(vbot, nb)
             if nv > 1 and q.name:
@@ -1211,7 +1296,7 @@ class Renderer(object):
 
         # --- 7. 跳房子 ---
         self._draw_houses(qlines, mstart, mend, nmeas,
-                          vtop if vtop is not None else self.y)
+                          house_y if house_y is not None else self.y)
 
         # --- 8. 歌词 ---
         #
@@ -1244,6 +1329,7 @@ class Renderer(object):
                 self.text(txt, sx - LYRIC_SIZE * k / 2.0, ly,
                           LYRIC_SIZE * k, anchor="start", family=FONT_SANS)
 
+        self._last_bottom = max(self._last_bottom, self.y + sys_bottom)
         self.y = cursor
 
     # ---- 减时线(时值线) ----------------------------------------------
@@ -1366,6 +1452,8 @@ class Renderer(object):
                 self.text(">", cx, y, fs * 0.6, family=FONT_NOTE)
             elif a == "hx":
                 self.text(",", cx, y, fs * 0.6, family=FONT_NOTE)
+            elif a == "sby":            # 上波音记号: 音符上方的小波纹
+                self._boyin(cx, nb)
             elif a == "zkh":            # 伴奏左括弧
                 self._paren(cx - 14 * k, nb, -1)
             elif a == "ykh":            # 伴奏右括弧
@@ -1396,6 +1484,23 @@ class Renderer(object):
         self.dwg.add(self.dwg.path(d=d, fill="#1b1b1b", stroke="#1b1b1b",
                                    stroke_width="%.2fpx" % (1.0 * k)))
         self.dot(cx, nb - 15.2 * k, 1.2 * k)
+
+    def _boyin(self, cx, nb):
+        """上波音记号 (&sby)。
+
+        参考实现的 boyinfu_shang1 字形: 一条宽约 15px、高约 7.5px 的细波纹
+        (两个波峰), 横向以音符中心居中, 挂在音符行上方约 14~22px 处。
+        """
+        k = self.k
+        pts = [(-7.5, 17.5), (-4.4, 20.3), (-0.7, 16.6),
+               (1.9, 20.3), (5.5, 16.6), (7.5, 19.0)]
+        d = "M %.2f %.2f " % (cx + pts[0][0] * k, nb - pts[0][1] * k) + \
+            " ".join("L %.2f %.2f" % (cx + dx * k, nb - dy * k)
+                     for dx, dy in pts[1:])
+        self.dwg.add(self.dwg.path(d=d, fill="none", stroke="#1b1b1b",
+                                   stroke_width="%.2fpx" % (2.7 * k),
+                                   stroke_linecap="round",
+                                   stroke_linejoin="round"))
 
     def _paren(self, x, nb, direc):
         """绘制伴奏大括弧 (&zkh / &ykh)。
@@ -1554,17 +1659,16 @@ class Renderer(object):
             self.text(str(n), mid, y - 5 * k, SMALL * k, family=FONT_NOTE)
 
     # ---- 跳房子 -------------------------------------------------------
-    def _draw_houses(self, qlines, mstart, mend, nmeas, nb):
+    def _draw_houses(self, qlines, mstart, mend, nmeas, y):
         """绘制跳房子 (反复跳跃记号)。
 
-        参考实现把横线画在音符行上方 HOUSE_PAD 处, 两端竖线下垂
-        HOUSE_TICK, 房号写在横线下方、房子左端稍右的位置。
+        横线高度由调用方按 HOUSE_PAD/HOUSE_STEP 算好 (并可被上一行内容
+        压低), 两端竖线下垂 HOUSE_TICK, 房号写在横线下方、左端稍右处。
 
         相邻两个跳房子共用一个端点 (前一个的终点小节线就是后一个的起点)
         时, 两根竖线各向自己一侧让出 HOUSE_GAP/2, 避免叠在一条线上。
         """
         k = self.k
-        y = nb - HOUSE_PAD * k          # 横线高度 (高于所有上方记号)
         half = HOUSE_GAP * k / 2.0      # 相邻跳房子各让出的间隙
         open_bar = None
         xa = 0.0
@@ -1605,7 +1709,7 @@ class Renderer(object):
 # --------------------------------------------------------------------------
 # 命令行
 # --------------------------------------------------------------------------
-def convert(infile, outfile=None, fmt="svg"):
+def convert(infile, outfile=None, fmt="svg", note_font="b"):
     text = open(infile, encoding="utf-8").read()
     header, items = parse_jps(text)
     if outfile:
@@ -1613,7 +1717,7 @@ def convert(infile, outfile=None, fmt="svg"):
     else:
         base = os.path.splitext(infile)[0]
     svg_out = base + ".svg"
-    renderer = Renderer(header)
+    renderer = Renderer(header, note_font)
     renderer.render(items, svg_out)
     total = len(renderer.pages)
     svgs = []
@@ -1634,9 +1738,12 @@ def main(argv=None):
     parser.add_argument("-f", "--format", metavar="FORMAT",
                         choices=["svg", "png", "pdf", "jpg"],
                         default="svg", help="输出格式, 默认 svg")
+    parser.add_argument("--note-font", metavar="b|c", default="b",
+                        choices=["b", "c"],
+                        help="音符字体风格 (影响纵向行距, 默认 b)")
     parser.add_argument("file", metavar="FILE", help="输入的 .jps 文件")
     args = parser.parse_args(argv)
-    convert(args.file, args.output, args.format)
+    convert(args.file, args.output, args.format, args.note_font)
     return 0
 
 
