@@ -1170,7 +1170,9 @@ class Renderer(object):
                     idpos[id(el)] = (px, nb)
                     if el.is_lyric_slot:
                         sl.append((px, nb))
-                self._draw_underlines(pos[vi][m], nb)
+                self._draw_underlines(pos[vi][m], nb,
+                                      vcoefs[vi][m][1] if m < len(vcoefs[vi])
+                                      else [])
             for m in range(nmeas):
                 bx, bar = barx[vi][m]
                 if bar is not None:
@@ -1223,41 +1225,62 @@ class Renderer(object):
         self.y = cursor
 
     # ---- 减时线(时值线) ----------------------------------------------
-    def _draw_underlines(self, placed, nb):
+    def _draw_underlines(self, placed, nb, onsets=None):
+        """绘制减时线。
+
+        连续的减时线音符若跨越了拍子 (四分音符为一拍), 参考实现会按拍把
+        下划线断开, 而不是连成一条贯穿的线; 这里按音符起始拍分组后再画。
+        """
         k = self.k
-        i = 0
         n = len(placed)
+
+        def beat(i):
+            if onsets and i < len(onsets):
+                return int(onsets[i] + 1e-9)
+            return 0
+
+        i = 0
         while i < n:
             el = placed[i][1]
             if not (isinstance(el, NoteEl) and el.slashes > 0):
                 i += 1
                 continue
             j = i
-            maxslash = 0
-            maxlow = 0
-            while j < n:
-                e2 = placed[j][1]
-                if not (isinstance(e2, NoteEl) and e2.slashes > 0):
-                    break
-                maxslash = max(maxslash, e2.slashes)
-                maxlow = max(maxlow, max(0, -e2.octave))
+            while (j < n and isinstance(placed[j][1], NoteEl)
+                   and placed[j][1].slashes > 0):
                 j += 1
-            base = UL_Y
-            for lv in range(1, maxslash + 1):
-                yy = nb + (base + (lv - 1) * UL_GAP) * k
-                s = i
-                while s < j:
-                    if placed[s][1].slashes < lv:
-                        s += 1
-                        continue
-                    t = s
-                    while t < j and placed[t][1].slashes >= lv:
-                        t += 1
-                    xa = placed[s][0] - 6 * k
-                    xb = placed[t - 1][0] + 6 * k
-                    self.line(xa, yy, xb, yy, 1.5 * k)
-                    s = t
+            # 同一拍内的连续音符组成一组, 组间留空隙
+            g = i
+            while g < j:
+                b = beat(g)
+                h = g + 1
+                while h < j and beat(h) == b:
+                    h += 1
+                self._draw_beam_group(placed, g, h, nb)
+                g = h
             i = j
+
+    def _draw_beam_group(self, placed, a, b, nb):
+        """画一组 (同一拍内) 减时线音符的下划线。"""
+        k = self.k
+        maxslash = max(placed[t][1].slashes for t in range(a, b))
+        for lv in range(1, maxslash + 1):
+            yy = nb + (UL_Y + (lv - 1) * UL_GAP) * k
+            s = a
+            while s < b:
+                if placed[s][1].slashes < lv:
+                    s += 1
+                    continue
+                t = s
+                while t < b and placed[t][1].slashes >= lv:
+                    t += 1
+                xa = placed[s][0] - 6 * k
+                last = placed[t - 1][1]
+                # 末音符带附点时, 减时线延长到附点之后
+                dx = (FUDIAN_DX + 4) if last.dots else 6
+                xb = placed[t - 1][0] + dx * k
+                self.line(xa, yy, xb, yy, 1.5 * k)
+                s = t
 
     # ---- 绘制一个音符 -------------------------------------------------
     def _draw_note(self, el, cx, nb):
