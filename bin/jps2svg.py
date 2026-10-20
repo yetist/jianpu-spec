@@ -106,6 +106,9 @@ ANNOT_SIZE = 16                     # 歌词注释(段落号)字号
 SMALL = 13                          # 记号/注释小字号
 DOT_R = 1.7                         # 八度点半径
 FUDIAN_DX = 11                      # 附点相对音符中心的水平偏移
+FUDIAN_R = 2.4                      # 附点半径 (参考实现约 5px 直径, 比八度点大)
+FUDIAN_Y = 0.5                      # 附点与音符行的垂直偏移 (数字竖直中心)
+FUDIAN_UNIT = 0.5                   # 附点音符后面的额外间距系数 (让开附点)
 
 VOICE_GAP = 78                      # 同一组内相邻声部的基线间距
 LYRIC_OFF = 44                      # 最后一声部基线 -> 首行歌词基线
@@ -892,10 +895,13 @@ def coef(a, b, onset_a=None, onset_b=None):
     """
     if isinstance(a, BarEl) or isinstance(b, BarEl):
         return UNIT_BAR
+    # 附点本身占一点宽度: 后面的音符要让开, 否则附点会压到下一个数字上
+    # (同一拍里的附点八分 + 十六分本来只有 1 个单位宽, 附点必然重叠)。
+    extra = FUDIAN_UNIT if getattr(a, "dots", 0) else 0.0
     if (a.slashes > 0 and b.slashes > 0 and onset_a is not None
             and onset_b is not None and int(onset_a) == int(onset_b)):
-        return UNIT_SAME_BEAM
-    base = UNIT_LONG if duration(a) > 1.0 else UNIT_SHORT
+        return UNIT_SAME_BEAM + extra
+    base = (UNIT_LONG if duration(a) > 1.0 else UNIT_SHORT) + extra
     # 倚音需要额外空间: 单音 0.6 个单位, 组内每多一个音再加 0.3
     n_grace = sum(len(g) for g in b.grace_front)
     return base + (0.6 + 0.3 * (n_grace - 1) if n_grace else 0.0)
@@ -1661,9 +1667,10 @@ class Renderer(object):
             self.dot(cx, nb - (OCT_HIGH + i * OCT_STEP) * k)
         for i in range(-el.octave):
             self.dot(cx, low_y + i * OCT_STEP * k)
-        # 附点
+        # 附点: 与数字竖直中心对齐, 半径比八度点大 (参考实现实测量得)
         for i in range(el.dots):
-            self.dot(cx + (FUDIAN_DX + i * 7) * k, nb + 4 * k, DOT_R * k * 1.1)
+            self.dot(cx + (FUDIAN_DX + i * 7) * k, nb + FUDIAN_Y * k,
+                     FUDIAN_R * k)
         # 倚音 (每组最右侧音符中心距主音符 GRACE_DX, 多个组依次再让开)
         for i, g in enumerate(el.grace_front):
             self._draw_grace(g, cx - (GRACE_DX + i * 9) * k, nb, back=False)
