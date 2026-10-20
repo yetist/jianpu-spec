@@ -1472,7 +1472,13 @@ class Renderer(object):
                 if bar is None:
                     continue
                 dy = span_dy(vi, m)
-                self._draw_bar(bar, bx, nb + dy)
+                # 区间在行中间结束时, 收尾小节线回到基本行, 与区间起点的小节线
+                # 同高 (参考实现实测); 区间一直延续到行末时, 行末小节线仍旧
+                # 跟着下移后的主声部。
+                if dy and span_end(vi, m) and bx < right - 0.5:
+                    self._draw_bar(bar, bx, nb)
+                else:
+                    self._draw_bar(bar, bx, nb + dy)
                 # 临时声部区间内部的小节线上下两行都要画
                 if dy > 0 and not span_end(vi, m):
                     self._draw_bar(bar, bx, nb - TEMP_DY * k)
