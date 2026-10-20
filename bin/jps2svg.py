@@ -1305,7 +1305,7 @@ class Renderer(object):
             vbot = nb if vbot is None else max(vbot, nb)
             if nv > 1 and q.name:
                 self.text(q.name, left - 35 * k, nb + 6 * k,
-                          SMALL * k, anchor="end", family=FONT_SANS)
+                          LYRIC_SIZE * k, anchor="end", family=FONT_SANS)
             sl = []
             for m in range(nmeas):
                 for (px, el) in pos[vi][m]:
@@ -1324,8 +1324,24 @@ class Renderer(object):
             self._draw_hairpins(q, idpos, nb)
 
         # --- 5. 声部括弧 ---
+        # 整行多声部: 括弧在行首; 行内才出现第二声部 (&sbf) 时, 括弧落在
+        # 该音符处 (参考实现放在音符左 25.5px, 与行首括弧同一形状)。
         if nv > 1:
-            self._draw_voice_bracket(left, vtop, vbot, k)
+            sbf_bar = None
+            for vi in range(nv):
+                for m in range(nmeas):
+                    bx, bar = barx[vi][m]
+                    if bar is not None and getattr(bar, "sbf", False):
+                        if sbf_bar is None or bx < sbf_bar:
+                            sbf_bar = bx
+            if sbf_bar is None:
+                self._draw_voice_bracket(left, vtop, vbot, k)
+            else:
+                # 括弧落在第二个声部真正进入的那个音符左侧 25.5px
+                xs = [px for vi in range(nv) for m in range(nmeas)
+                      for (px, el) in pos[vi][m] if px > sbf_bar + 1]
+                self._draw_voice_bracket(min(xs) if xs else sbf_bar,
+                                         vtop, vbot, k)
 
         # --- 6. 连音线 ---
         for vi, q in enumerate(qlines):
@@ -1643,12 +1659,13 @@ class Renderer(object):
 
     # ---- 声部括弧 -----------------------------------------------------
     def _draw_voice_bracket(self, left, top, bottom, k):
-        y1 = top - BAR_UP * k
-        y2 = bottom + BAR_DN * k
-        x = left - 14 * k
-        self.line(x, y1, x, y2, 1.4 * k)
-        self.line(x, y1, x + 7 * k, y1, 1.4 * k)
-        self.line(x, y2, x + 7 * k, y2, 1.4 * k)
+        """多声部左侧括线: 粗 4px + 细 2px 两根竖线 (参考实现实测)。
+
+        粗线在音符左 25.5px、上下各超出 6.5px; 细线在左 21px、上下各超出
+        8px, 因此两端看起来像小钩。"""
+        for dx, over, w in ((25.5, 6.5, 4.0), (21.0, 8.0, 2.0)):
+            x = left - dx * k
+            self.line(x, top - over * k, x, bottom + over * k, w * k)
 
     # ---- 渐强 / 渐弱 --------------------------------------------------
     def _draw_hairpins(self, qline, idpos, nb):
