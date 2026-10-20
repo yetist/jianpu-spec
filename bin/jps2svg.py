@@ -109,6 +109,8 @@ FUDIAN_DX = 11                      # 附点相对音符中心的水平偏移
 FUDIAN_R = 2.4                      # 附点半径 (参考实现约 5px 直径, 比八度点大)
 FUDIAN_Y = 0.5                      # 附点与音符行的垂直偏移 (数字竖直中心)
 FUDIAN_UNIT = 0.5                   # 附点音符后面的额外间距系数 (让开附点)
+ACC_UNIT = 0.2                      # 升降号左右各占的间距系数
+GRACE_UNIT = 0.28                   # 每个倚音占用的间距系数
 
 VOICE_GAP = 78                      # 同一组内相邻声部的基线间距
 LYRIC_OFF = 44                      # 最后一声部基线 -> 首行歌词基线
@@ -916,6 +918,14 @@ def duration(el):
     return d * getattr(el, "tup", 1.0)
 
 
+def text_width(s, size):
+    """估算一段文字的宽度 (CJK 按全角, 其余按 0.55 倍字号)。"""
+    w = 0.0
+    for ch in s:
+        w += size if ord(ch) > 0x2E7F else size * 0.55
+    return w
+
+
 def parse_graces(inner):
     """把 "[..]" 里的倚音串拆成 [(数字, 八度, 减时线数), ...]。"""
     out = []
@@ -945,14 +955,20 @@ def parse_graces(inner):
 def coef(a, b, onset_a=None, onset_b=None):
     """两个相邻元素之间的时值系数 (相对单位宽度)。
 
-    参考实现里: 同一拍内的相邻减时线音符紧挨着排 (1 个单位); 其余情况按
-    前一个音符的时值给间距 -- 一拍及以内的音符 1.5 个单位, 更长的 2 个单位。
+    参考实现的间距是 2 个基准单位(同一拍内)/ 3 个单位(跨拍) / 2.8 个单位
+    (小节线两侧); 本模块的系数取它的一半, 即 1 / 1.5 / 1.4。
+    附点在数字右侧额外占 1 个单位(0.5), 升降号左右各占 0.4 个单位(0.2)。
     """
-    if isinstance(a, BarEl) or isinstance(b, BarEl):
-        return UNIT_BAR
+    if isinstance(a, BarEl):
+        return UNIT_BAR + ACC_UNIT * bool(getattr(b, "acc", ""))
+    if isinstance(b, BarEl):
+        return UNIT_BAR + ACC_UNIT * bool(getattr(a, "acc", ""))
     # 附点本身占一点宽度: 后面的音符要让开, 否则附点会压到下一个数字上
     # (同一拍里的附点八分 + 十六分本来只有 1 个单位宽, 附点必然重叠)。
     extra = FUDIAN_UNIT if getattr(a, "dots", 0) else 0.0
+    # 升降号画在数字左侧, 但它占的宽度平均分到前后两个间距里
+    extra += ACC_UNIT * (bool(getattr(a, "acc", ""))
+                         + bool(getattr(b, "acc", "")))
     same_beat = (onset_a is not None and onset_b is not None
                  and int(onset_a) == int(onset_b))
     # 连音(多连音)内部: 音符挤在同一拍里, 和同一拍的减时线音符一样紧挨着
@@ -960,10 +976,9 @@ def coef(a, b, onset_a=None, onset_b=None):
     in_tuplet = ga is not None and ga is getattr(b, "tup_grp", None)
     if in_tuplet or (same_beat and a.slashes > 0 and b.slashes > 0):
         return UNIT_SAME_BEAM + extra
-    base = (UNIT_LONG if duration(a) > 1.0 else UNIT_SHORT) + extra
-    # 倚音需要额外空间: 单音 0.6 个单位, 组内每多一个音再加 0.3
+    # 倚音需要额外空间: 参考实现每个倚音占 0.56 个基准单位(0.28)
     n_grace = sum(len(g) for g in b.grace_front)
-    return base + (0.6 + 0.3 * (n_grace - 1) if n_grace else 0.0)
+    return UNIT_SHORT + extra + GRACE_UNIT * n_grace
 
 
 # --------------------------------------------------------------------------
@@ -1025,8 +1040,8 @@ class Renderer(object):
         self._first_base = bottom + FIRST_GAP * self.k
         self.y = self._first_base
         self._last_bottom = 0.0
-        # 最后一行 (全曲最后一行谱) 不向右拉伸: 参考实现只在前面各行把
-        # 单位宽度撑到最大, 末行沿用同样的密度, 于是短句就停在左侧。
+        # 横向疏密状态 (见 _render_system): None 表示用初始单位宽度。
+        self._unit_state = None
         self._tie_carry = self._tie_carries(items)
         last_sys = None
         for i, it in enumerate(items):
@@ -1131,6 +1146,8 @@ class Renderer(object):
             onsets.append(t)
             t += duration(el)
         tail = UNIT_END if last else UNIT_BAR
+        if notes and getattr(notes[-1], "acc", ""):
+            tail += ACC_UNIT
         coefs = []
         for i in range(len(notes)):
             nxt = notes[i + 1] if i + 1 < len(notes) else bar
@@ -1263,6 +1280,11 @@ class Renderer(object):
                 house_y = max(house_y, self._last_bottom + HOUSE_CLAMP * k)
 
         left = (MUSIC_L_MV if nv > 1 else MUSIC_L) * k
+        # 声部名称占左侧空间: 参考实现把整行 (含声部括弧) 右移名称宽度
+        if nv > 1:
+            for q in qlines:
+                if q.name:
+                    left += text_width(q.name, LYRIC_SIZE) * k
         right = MUSIC_R * k
         # 行首若是隐藏休止符 8, 参考实现会整体右移一段; 行首带伴奏左括弧
         # (&zkh) 时也稍作右移, 给括弧留出位置。
@@ -1321,6 +1343,18 @@ class Renderer(object):
                 and not has_notes(0):
             lead_bar0 = voices[0][0][1]
 
+        def first_of(m):
+            """第 m 小节的第一个音符 (跨声部查找)。"""
+            for vi in range(nv):
+                vv = voices[vi]
+                if m < len(vv) and vv[m][0]:
+                    return vv[m][0][0]
+            for t in temps:
+                j = m - t["m0"]
+                if 0 <= j < t["n"] and t["meas"][j][0]:
+                    return t["meas"][j][0][0]
+            return None
+
         def lead_coef(m):
             # 小节线 -> 本小节第一个音符之间的系数。
             if m == 0:
@@ -1331,6 +1365,10 @@ class Renderer(object):
                                   and not lead_bar0.hide) else 0.0)
             else:
                 c = UNIT_BAR
+            # 升降号画在数字左侧, 占的宽度分一半到前面的间距里
+            first = first_of(m)
+            if first is not None and getattr(first, "acc", ""):
+                c += ACC_UNIT
             # 临时拍号紧贴小节线, 要让出写拍号的宽度, 后面的音符相应右移
             if pai_at(m):
                 c += UNIT_PAI
@@ -1410,14 +1448,22 @@ class Renderer(object):
             if end < nmeas:
                 pad_r[end - 1] = TEMP_PAD * k
         temp_pad = sum(pad_l) + sum(pad_r)
-        u = (right - left - sbf_pad - temp_pad) / total
-        # 末行不拉伸到右边界: 参考实现让末行沿用上一行的单位宽度 (同样的
-        # 疏密), 只有末行自身更密时才用它自己的值。
-        if last:
-            if self._prev_u is not None and u > self._prev_u * 2.0:
-                u = self._prev_u
+        available = right - left - sbf_pad - temp_pad
+        fit_u = available / total
+        # 参考实现的横向疏密: 有一个"当前单位宽度", 初始为 12.5px (本模块的
+        # 系数是它的一半, 故为 25px)。谱行在当前单位下已经占到整行 63% 以上
+        # 时, 把它撑满 (或压缩) 整行; 短行则沿用当前单位左对齐, 不拉伸。
+        # 行末小节收尾的系数比小节线大, 判断是否拉伸时按小节线算 (与参考
+        # 实现的计算方式一致)。
+        model = total - (UNIT_END - UNIT_BAR if last else 0.0)
+        u_default = 25.0 * k
+        cur_u = getattr(self, "_unit_state", None) or u_default
+        natural = model * cur_u + sbf_pad + temp_pad
+        if natural >= 0.63 * available:
+            u = fit_u
         else:
-            self._prev_u = u
+            u = min(cur_u, fit_u)
+        self._unit_state = u
         # 临时拍号画在小节线右侧 UNIT_PAI 个单位宽处 (参考实现实测)
         self._pai_dx = UNIT_PAI * u
 
