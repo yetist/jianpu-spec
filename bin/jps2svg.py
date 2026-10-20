@@ -1659,13 +1659,22 @@ class Renderer(object):
 
     # ---- 声部括弧 -----------------------------------------------------
     def _draw_voice_bracket(self, left, top, bottom, k):
-        """多声部左侧括线: 粗 4px + 细 2px 两根竖线 (参考实现实测)。
+        """多声部左侧括线: 粗 4px + 细 2px 两根竖线, 两端再用一条斜线把
+        两根竖线连起来 (参考实现的 shengbufu_shang / shengbufu_xia 字形)。
 
         粗线在音符左 25.5px、上下各超出 6.5px; 细线在左 21px、上下各超出
-        8px, 因此两端看起来像小钩。"""
+        8px。斜线起于细线右上方, 向左下方落到粗线顶端, 下端镜像。"""
         for dx, over, w in ((25.5, 6.5, 4.0), (21.0, 8.0, 2.0)):
             x = left - dx * k
             self.line(x, top - over * k, x, bottom + over * k, w * k)
+        spec = ((left - 17.9 * k, top - 13.0 * k, 5.5, 7.4),
+                (left - 17.75 * k, bottom + 13.4 * k, -5.72, -7.7))
+        for x0, y0, cy, ey in spec:
+            d = "M %.2f %.2f C %.2f %.2f %.2f %.2f %.2f %.2f" % (
+                x0, y0, x0, y0, x0 - k, y0 + cy * k, x0 - 9.4 * k,
+                y0 + ey * k)
+            self.dwg.add(self.dwg.path(d=d, fill="none", stroke="#1b1b1b",
+                                       stroke_width="%.2fpx" % (2 * k)))
 
     # ---- 渐强 / 渐弱 --------------------------------------------------
     def _draw_hairpins(self, qline, idpos, nb):
