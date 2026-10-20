@@ -88,8 +88,9 @@ HEADER_BLANK_DROP = 20              # 描述头里每多一个空行(空 B:/Z: �
 DYN_PAD = 12                        # 首行上方若有力度记号再让出的空间
 HOUSE_PAD = 30                      # 跳房子横线距音符行的高度 (参考实现实测)
 HOUSE_STEP = 10                     # "[+" 每多一个 "+", 横线再抬高这么多
+HOUSE_CLEAR = 16                    # 横线与音符上方内容(连音线等)的最小间隙
 HOUSE_RESERVE = 12                  # 有跳房子时行首额外让出的高度
-HOUSE_CLAMP = 25                    # 跳房子横线至多高到上一行内容底部之上
+HOUSE_CLAMP = 25                    # 横线距上一行内容底部的最小距离
 HOUSE_TICK = 10                     # 跳房子两端竖线下垂高度
 HOUSE_GAP = 4                       # 相邻跳房子共用一个端点时, 两根竖线间的间隙
 
@@ -1114,6 +1115,19 @@ class Renderer(object):
         at_top = (abs(self.y - self._first_base) < 0.1
                   or abs(self.y - self._page_top) < 0.1)
 
+        # 跳房子横线高度 = 音符行上方 max(HOUSE_PAD + HOUSE_STEP*"+" 的个数,
+        # 本行上方内容(连音线弧顶/八度点/力度/记号)的最高点 + HOUSE_CLEAR)。
+        # 排版时内容整体下移, 让横线正好落在上一行内容底部之下 HOUSE_CLAMP
+        # 处, 而不是把横线压下来, 于是横线与连音线之间始终留有间隙
+        # (参考 006 末行: 横线 584、音符行 624, 连音线弧顶上方约 16px)。
+        base_off = HOUSE_PAD + HOUSE_STEP * house_plus
+        content_off = 0.0
+        if has_house:
+            for q in qlines[:1]:
+                content_off = max(content_off,
+                                  self._row_headroom(q) + HOUSE_CLEAR)
+        house_off = max(base_off, content_off)
+
         # --- 纵向: 按源码顺序把声部行与歌词行分为若干"簇" ---
         #
         # 脚本正文里, 一个声部行连同紧跟在它后面的歌词行构成一个"簇": 歌词
@@ -1158,6 +1172,11 @@ class Renderer(object):
 
         pad = (HOUSE_RESERVE * k) if has_house \
             else ((DYN_PAD * k) if (has_dyn and at_top) else 0.0)
+        if has_house and not at_top:
+            # 有跳房子: 内容整体下移, 让横线正好落在上一行内容底部之下
+            # HOUSE_CLAMP 处, 空出 house_off 的高度给横线和上方内容。
+            pad = max(pad, (self._last_bottom
+                            + (HOUSE_CLAMP + house_off) * k) - self.y)
         # 参考实现只在源码里的分页符处换页, 不按版心高度自动折行; 这里仅当
         # 内容会超出物理页面时兜底另起一页。
         if self.y + pad + sys_bottom > self.page_h - 20 * k:
@@ -1168,11 +1187,11 @@ class Renderer(object):
             pad = (HOUSE_RESERVE * k) if has_house else 0.0
         self.y += pad
 
-        # 跳房子横线: 默认在音符行上方 HOUSE_PAD, 每个 "+" 再抬高 HOUSE_STEP;
-        # 但不得高过上一行内容的底部, 以免与上一行歌词/记号重叠。
+        # 跳房子横线: 高度已在上面按本行上方内容算好 (house_off); 若受版面
+        # 所限仍可能压到上一行, 再兜底压到上一行内容底部之下。
         house_y = None
         if has_house:
-            house_y = self.y - (HOUSE_PAD + HOUSE_STEP * house_plus) * k
+            house_y = self.y - house_off * k
             if not at_top:
                 house_y = max(house_y, self._last_bottom + HOUSE_CLAMP * k)
 
@@ -1898,7 +1917,47 @@ class Renderer(object):
         self.line(ax, y, bx, y + sp, 1.0 * k)
 
     # ---- 连音线 -------------------------------------------------------
-    def _draw_ties(self, elements, idpos, k):
+    @staticmethod
+    def _tie_lift(level, marked, hi):
+        """连音线端点离音符行的高度 (参考系 px)。"""
+        return 16 + 5 * (1 if hi else 0) + 7 * (1 if marked else 0) + 7 * level
+
+    @staticmethod
+    def _tie_top(level, marked, hi, multi):
+        """连音线 (含弧顶, 必要时含线上数字) 在音符行上方的高度。"""
+        h = Renderer._tie_lift(level, marked, hi) + 8      # 弧顶比端点高 8px
+        if multi:
+            h += 5 + SMALL * 0.78       # 连音线上标注的数字
+        return h
+
+    def _row_headroom(self, qline):
+        """一个声部行自身内容在音符行上方能达到的最高高度 (参考系 px)。
+
+        跳房子横线必须落在这些内容之上, 不能压到连音线/八度点/力度/渐强线。
+        只统计确实会高过 HOUSE_PAD 的东西 (歌词、减时线都在行下方, 各种
+        小记号最高约 22px, 参考实现也不会为它们抬高跳房子)。
+        """
+        top = 0.0
+        for el in qline.elements:
+            if not isinstance(el, NoteEl):
+                continue
+            if el.dynamics:
+                top = max(top, 26 + SMALL * 0.78)      # 力度记号 (基线 -26)
+            if el.octave > 0:                          # 高八度点
+                top = max(top, OCT_HIGH + (el.octave - 1) * OCT_STEP)
+            if el.cresc:                               # 渐强/渐弱线的上开口
+                top = max(top, 30 + el.cresc[1] * 7 + 5)
+        for a, b, level, multi, marked, hi in self._tie_specs(qline.elements):
+            top = max(top, self._tie_top(level, marked, hi, multi))
+        return top
+
+    def _tie_specs(self, elements):
+        """按开/闭顺序把音符配成连音线。
+
+        返回 [(起点元素, 终点元素, 嵌套层数, 是否标数字, 上方有记号, 高八度)]
+        绘制和纵向占位计算共用这套配对逻辑。
+        """
+        specs = []
         stack = []                      # [元素, 内部已收束的连音线条数]
         for el in elements:
             if not isinstance(el, NoteEl):
@@ -1913,19 +1972,24 @@ class Renderer(object):
                     marked = any(m in ("yc", "bc", "zy", "dy")
                                  for n in (a, el) for m in n.articulations)
                     hi = a.octave > 0 or el.octave > 0
-                    if id(a) in idpos and id(el) in idpos:
-                        self._tie(idpos[id(a)], idpos[id(el)], inner,
-                                  a.multi, k, marked, hi)
+                    specs.append((a, el, inner, a.multi, marked, hi))
                     for s in stack:
                         s[1] += 1
+        return specs
+
+    def _draw_ties(self, elements, idpos, k):
+        for a, b, level, multi, marked, hi in self._tie_specs(elements):
+            if id(a) in idpos and id(b) in idpos:
+                self._tie(idpos[id(a)], idpos[id(b)], level,
+                          multi, k, marked, hi)
 
     def _tie(self, a, b, level, multi, k, marked=False, hi=False):
         x1, y1 = a
         x2, y2 = b
         # 端点高度基准 16px (参考实现实测 16/24): 高八度点 +5, 上方有记号
         # +7, 每嵌套一层 +7; 弧顶再比端点高 8px。
-        y = min(y1, y2) - (16 + 5 * (1 if hi else 0)
-                           + 7 * (1 if marked else 0) + 7 * level) * k
+        lift = self._tie_lift(level, marked, hi)
+        y = min(y1, y2) - lift * k
         mid = (x1 + x2) / 2.0
         h = 16 * k
         d = "M %.2f %.2f Q %.2f %.2f %.2f %.2f" % (x1, y, mid, y - h, x2, y)
@@ -1939,8 +2003,8 @@ class Renderer(object):
     def _draw_houses(self, qlines, mstart, mend, nmeas, y):
         """绘制跳房子 (反复跳跃记号)。
 
-        横线高度由调用方按 HOUSE_PAD/HOUSE_STEP 算好 (并可被上一行内容
-        压低), 两端竖线下垂 HOUSE_TICK, 房号写在横线下方、左端稍右处。
+        横线高度由调用方按"音符行上方内容 + HOUSE_CLEAR"算好 (house_off),
+        两端竖线下垂 HOUSE_TICK, 房号写在横线下方、左端稍右处。
 
         相邻两个跳房子共用一个端点 (前一个的终点小节线就是后一个的起点)
         时, 两根竖线各向自己一侧让出 HOUSE_GAP/2, 避免叠在一条线上。
