@@ -136,6 +136,8 @@ UNIT_LONG = 2.0                     # 前一音符 > 半拍时的间距
 UNIT_BAR = 1.4                      # 与小节线相邻
 UNIT_END = 2.0                      # 行末最后一小节收尾
 UNIT_PAI = 1.0                      # 临时拍号占用的小节内宽度
+TEMP_DY = 28                        # 临时伴奏/多声部: 主声部下移 / 临时声部上移
+TEMP_PAD = 20                       # 临时伴奏/多声部: 花括号两侧的固定留白
 SBF_PAD = 20                        # &sbf 行内多声部: 小节线后再让出的空间
 
 # 倚音 (参考实现用预组合的 qy 字形, 实测参数):
@@ -232,6 +234,7 @@ class QLine(object):
         self.voice = voice
         self.name = name
         self.elements = []         # NoteEl / BarEl 交替
+        self.temps = []            # 临时伴奏/多声部块 TempBlock
 
     @property
     def measures(self):
@@ -246,6 +249,39 @@ class QLine(object):
                 notes.append(el)
         if notes:
             result.append((notes, None))
+        return result
+
+
+class TempBlock(object):
+    """{bz ...} / {dsb ...} 临时伴奏 / 临时多声部块。
+
+    块内的音符与主旋律同时进行, 从主旋律的第 m0 个小节开始, 依次占用
+    后续小节 (小节数 = 块内的小节数)。参考实现把这些小节展开成上下两行:
+    临时声部在上, 主声部在下, 整段左右各画一个花括号。
+    """
+
+    def __init__(self, kind="", m0=0, elements=None):
+        self.kind = kind
+        self.m0 = m0
+        self.elements = elements or []
+
+    @property
+    def measures(self):
+        result = []
+        notes = []
+        for el in self.elements:
+            if isinstance(el, BarEl):
+                result.append((notes, el))
+                notes = []
+            else:
+                notes.append(el)
+        if notes:
+            result.append((notes, None))
+        # 块首/块尾的空片段不算小节 (如 `{ | 6, - }`)
+        while result and not result[0][0]:
+            result.pop(0)
+        while result and not result[-1][0]:
+            result.pop()
         return result
 
 
@@ -638,20 +674,22 @@ def parse_pai(val):
 
 
 def parse_block(tok):
-    """解析 {bz ...} / {dsb ...} 临时伴奏/多声部块。"""
+    """解析 {bz ...} / {dsb ...} 临时伴奏/多声部块, 返回 (类型, 元素列表)。"""
     body = tok[1:-1] if tok.endswith("}") else tok[1:]
     body = body.strip()
+    kind = ""
     for prefix in ("bz", "dsb"):
         if body.startswith(prefix):
+            kind = prefix
             body = body[len(prefix):]
             break
     els = []
-    for kind, t in tokenize(body):
-        if kind == "bar":
+    for k, t in tokenize(body):
+        if k == "bar":
             els.append(parse_bar(t))
-        elif kind == "note":
+        elif k == "note":
             els.append(parse_note(t))
-    return merge_elements(els)
+    return kind, merge_elements(els)
 
 
 def merge_elements(raw):
@@ -763,7 +801,10 @@ def parse_jps(text):
                     if kind2 == "bar":
                         raw.append(parse_bar(tok))
                     elif kind2 == "block":
-                        raw.extend(parse_block(tok))
+                        bkind, bels = parse_block(tok)
+                        # 块从当前小节开始 (之前已结束的小节数)
+                        m0 = len([e for e in raw if isinstance(e, BarEl)])
+                        q.temps.append(TempBlock(bkind, m0, bels))
                     else:
                         raw.append(parse_note(tok))
                 q.elements = merge_elements(raw)
@@ -1046,6 +1087,21 @@ class Renderer(object):
         nv = len(qlines)
         nl = len(lyrics)
 
+        # 临时伴奏 / 临时多声部 ({bz ...} / {dsb ...}): 与主旋律同时进行,
+        # 从主旋律的第 m0 个小节开始占用若干小节。参考实现把这些小节展开
+        # 成上下两行 (临时声部在上, 主声部在下), 整段左右各加花括号。
+        temps = []                      # [{vi, m0, n, meas, coefs}, ...]
+        for vi, q in enumerate(qlines):
+            for tb in getattr(q, "temps", ()):
+                tm = tb.measures
+                if not tm or tb.m0 >= nmeas:
+                    continue
+                tm = tm[:nmeas - tb.m0]
+                temps.append({"vi": vi, "m0": tb.m0, "n": len(tm), "meas": tm,
+                              "block": tb,
+                              "coefs": [self._measure_coefs(n, b, False)
+                                        for (n, b) in tm]})
+
         has_dyn = any(isinstance(el, NoteEl) and el.dynamics
                       for q in qlines for el in q.elements)
         house_plus = 0
@@ -1152,8 +1208,14 @@ class Renderer(object):
             vcoefs.append(mm)
 
         def has_notes(m):
-            return any(m < len(voices[vi]) and voices[vi][m][0]
-                       for vi in range(nv))
+            if any(m < len(voices[vi]) and voices[vi][m][0]
+                   for vi in range(nv)):
+                return True
+            for t in temps:
+                j = m - t["m0"]
+                if 0 <= j < t["n"] and t["meas"][j][0]:
+                    return True
+            return False
 
         def pai_at(m):
             """第 m 小节起始小节线上挂着的临时拍号 (写在上一小节收尾小节线上)。"""
@@ -1205,17 +1267,18 @@ class Renderer(object):
                 grid.append(0.0)
                 gcum.append([])
                 continue
-            tl = sorted({o for vi in range(nv) if m < len(vcoefs[vi])
-                         for o in vcoefs[vi][m][1]})
+            srcs = [vcoefs[vi][m] for vi in range(nv) if m < len(vcoefs[vi])]
+            for t in temps:
+                j = m - t["m0"]
+                if 0 <= j < t["n"]:
+                    srcs.append(t["coefs"][j])
+            tl = sorted({o for (_cfs, ons) in srcs for o in ons})
             seq = []
             acc = 0.0
             for j, t in enumerate(tl):
                 nxt = tl[j + 1] if j + 1 < len(tl) else None
                 c = None
-                for vi in range(nv):
-                    if m >= len(vcoefs[vi]):
-                        continue
-                    cfs, ons = vcoefs[vi][m]
+                for cfs, ons in srcs:
                     for i, o in enumerate(ons):
                         if abs(o - t) > 1e-9:
                             continue
@@ -1247,7 +1310,21 @@ class Renderer(object):
                     if sbf_m is None or m + 1 < sbf_m:
                         sbf_m = m + 1
         sbf_pad = SBF_PAD * k if sbf_m is not None else 0.0
-        u = (right - left - sbf_pad) / total
+        # 临时伴奏/多声部: 花括号所在的小节两侧各留 TEMP_PAD px 固定空白
+        # (参考实现实测: 花括号不会紧贴音符)。
+        pad_l = [0.0] * nmeas
+        pad_r = [0.0] * nmeas
+        for t in temps:
+            m0, n = t["m0"], t["n"]
+            end = m0 + n
+            if end > nmeas:
+                continue
+            if sum(grid[:m0]) > 1e-6:
+                pad_l[m0] = TEMP_PAD * k
+            if end < nmeas:
+                pad_r[end - 1] = TEMP_PAD * k
+        temp_pad = sum(pad_l) + sum(pad_r)
+        u = (right - left - sbf_pad - temp_pad) / total
         # 末行不拉伸到右边界: 参考实现让末行沿用上一行的单位宽度 (同样的
         # 疏密), 只有末行自身更密时才用它自己的值。
         if last:
@@ -1260,11 +1337,13 @@ class Renderer(object):
 
         # 小节起点 (= 上一个小节末尾的小节线位置); sbf_m 之后整体右移
         mstart = []
+        cpad = []                       # 小节内容相对小节线的固定偏移
         x = left
         for m in range(nmeas):
             mstart.append(x + (sbf_pad if sbf_m is not None and m > sbf_m
                                else 0.0))
-            x += grid[m] * u
+            cpad.append(pad_l[m])
+            x += grid[m] * u + pad_l[m] + pad_r[m]
         mend = mstart + [x + sbf_pad]
 
         # --- 2. 计算每个声部每个音符的 x 位置 ---
@@ -1280,7 +1359,8 @@ class Renderer(object):
                 lst = []
                 for i, el in enumerate(notes):
                     o = onsets[i] if i < len(onsets) else 0.0
-                    px = mstart[m] + (lead + cum_lookup(gcum[m], o)) * u
+                    px = (mstart[m] + cpad[m]
+                          + (lead + cum_lookup(gcum[m], o)) * u)
                     if sbf_m is not None and m == sbf_m:
                         px += sbf_pad
                     lst.append((px, el))
@@ -1288,6 +1368,34 @@ class Renderer(object):
                 bv.append((mend[m + 1], bar))
             pos.append(pv)
             barx.append(bv)
+
+        # 临时声部的音符位置: 与主声部共用同一小节起点和时间网格
+        tpos = []                       # tpos[ti] = [(x, el, m), ...]
+        for t in temps:
+            lst = []
+            for j, (notes, bar) in enumerate(t["meas"]):
+                m = t["m0"] + j
+                onsets = t["coefs"][j][1]
+                lead = lead_coef(m)
+                for i, el in enumerate(notes):
+                    o = onsets[i] if i < len(onsets) else 0.0
+                    lst.append((mstart[m] + cpad[m]
+                                + (lead + cum_lookup(gcum[m], o)) * u,
+                                el, m))
+            tpos.append(lst)
+
+        def span_dy(vi, m):
+            """该小节里主声部要下移的距离 (0 表示不在临时声部区间内)。"""
+            for t in temps:
+                if t["vi"] == vi and t["m0"] <= m < t["m0"] + t["n"]:
+                    return TEMP_DY * k
+            return 0.0
+
+        def span_end(vi, m):
+            for t in temps:
+                if t["vi"] == vi and m == t["m0"] + t["n"] - 1:
+                    return True
+            return False
 
         # --- 3. 按"簇"自上而下定位声部行与歌词行 ---
         #
@@ -1298,15 +1406,24 @@ class Renderer(object):
         lyric_anchor = {}               # id(lyric) -> 所属声部序号
         cursor = self.y
         for q, lys in clusters:
+            shifted = False
             if q is not None:
+                # 带临时伴奏/多声部的声部: 临时声部占音符行的位置, 本声部
+                # 下移 TEMP_DY, 歌词再跟着下移同样的距离 (参考实现实测)
+                shifted = any(t["vi"] == qindex.get(id(q)) for t in temps)
+                if shifted:
+                    cursor += TEMP_DY * k
                 vy[id(q)] = cursor
                 cursor += self.vgap * k
             nb = vy.get(id(q)) if q is not None else self.y
             for j, ly in enumerate(lys):
-                lyric_y[id(ly)] = nb + (self.lyric_off + j * LYRIC_LINE) * k
+                lyric_y[id(ly)] = nb + (self.lyric_off + j * LYRIC_LINE
+                                        + (TEMP_DY if shifted else 0)) * k
                 lyric_anchor[id(ly)] = qindex.get(id(q), 0)
             if lys:
                 cursor += (ly_lead + LYRIC_LINE * (len(lys) - 1)) * k
+                if shifted:                 # 歌词已随声部下移, 簇也相应加高
+                    cursor += TEMP_DY * k
 
         # --- 4. 绘制各声部 ---
         slots = []                      # slots[vi] = [(x, y_nb, is_lyric)]
@@ -1322,20 +1439,39 @@ class Renderer(object):
                           LYRIC_SIZE * k, anchor="end", family=FONT_SANS)
             sl = []
             for m in range(nmeas):
+                dy = span_dy(vi, m)
                 for (px, el) in pos[vi][m]:
-                    self._draw_note(el, px, nb)
-                    idpos[id(el)] = (px, nb)
+                    self._draw_note(el, px, nb + dy)
+                    idpos[id(el)] = (px, nb + dy)
                     if el.is_lyric_slot:
-                        sl.append((px, nb))
-                self._draw_underlines(pos[vi][m], nb,
+                        sl.append((px, nb + dy))
+                self._draw_underlines(pos[vi][m], nb + dy,
                                       vcoefs[vi][m][1] if m < len(vcoefs[vi])
                                       else [])
             for m in range(nmeas):
                 bx, bar = barx[vi][m]
-                if bar is not None:
-                    self._draw_bar(bar, bx, nb)
+                if bar is None:
+                    continue
+                dy = span_dy(vi, m)
+                self._draw_bar(bar, bx, nb + dy)
+                # 临时声部区间内部的小节线上下两行都要画
+                if dy > 0 and not span_end(vi, m):
+                    self._draw_bar(bar, bx, nb - TEMP_DY * k)
             slots.append(sl)
             self._draw_hairpins(q, idpos, nb)
+
+        # --- 4b. 临时伴奏 / 临时多声部声部 ---
+        for t, lst in zip(temps, tpos):
+            tq = qlines[t["vi"]]
+            tnb = vy.get(id(tq), self.y) - TEMP_DY * k
+            for (px, el, m) in lst:
+                self._draw_note(el, px, tnb)
+                idpos[id(el)] = (px, tnb)
+            for j, (notes, bar) in enumerate(t["meas"]):
+                m = t["m0"] + j
+                self._draw_underlines([(px, el) for (px, el, mm) in lst
+                                       if mm == m], tnb, t["coefs"][j][1])
+            self._draw_ties(t["block"].elements, idpos, k)
 
         # --- 5. 声部括弧 ---
         # 整行多声部: 括弧在行首; 行内才出现第二声部 (&sbf) 时, 括弧落在
@@ -1356,6 +1492,20 @@ class Renderer(object):
                       for (px, el) in pos[vi][m] if px > sbf_bar + 1]
                 self._draw_voice_bracket(min(xs) if xs else sbf_bar,
                                          vtop, vbot, k)
+
+        # --- 5b. 临时伴奏/多声部的花括号 ---
+        # 参考实现只在区间两端各画一个花括号, 起止正好落在谱行两端时不画
+        # (如从行首开始、到行末结束的情形)。
+        for t in temps:
+            nb = vy.get(id(qlines[t["vi"]]), self.y)
+            m0, n = t["m0"], t["n"]
+            end = m0 + n
+            if end > nmeas:
+                continue
+            if mstart[m0] > left + 0.5:
+                self._draw_curly(mstart[m0] + 13.6 * k, nb, k, 1)
+            if mend[end] < right - 0.5:
+                self._draw_curly(mend[end] - 13.6 * k, nb, k, -1)
 
         # --- 6. 连音线 ---
         for vi, q in enumerate(qlines):
@@ -1672,6 +1822,28 @@ class Renderer(object):
         _ = dots
 
     # ---- 声部括弧 -----------------------------------------------------
+    def _draw_curly(self, x, y, k, face=1):
+        """临时伴奏/多声部区间的花括号 (对应参考实现 dakuohu_zuo_2/_you_2)。
+
+        face=1 为左花括号 "{" (尖端朝左), face=-1 为右花括号 "}"。上下各
+        伸出 39.6px, 覆盖上下两行音符。
+        """
+        pts = [(5.4, -38.8), (1.5, -34.0), (0.6, -24.0), (0.6, -16.0),
+               (0.6, -8.0), (-0.3, -3.0), (-3.5, -0.9), (-3.5, 0.9),
+               (-0.3, 3.0), (0.6, 8.0), (0.6, 16.0), (0.6, 24.0),
+               (1.5, 34.0), (5.4, 38.8)]
+        p = [(x + px * face * k, y + py * k) for (px, py) in pts]
+        d = ("M %.2f %.2f C %.2f %.2f %.2f %.2f %.2f %.2f "
+             "C %.2f %.2f %.2f %.2f %.2f %.2f "
+             "L %.2f %.2f "
+             "C %.2f %.2f %.2f %.2f %.2f %.2f "
+             "C %.2f %.2f %.2f %.2f %.2f %.2f") % tuple(
+                 v for pt in p for v in pt)
+        self.dwg.add(self.dwg.path(d=d, fill="none", stroke="#1b1b1b",
+                                   stroke_width="%.2fpx" % (2 * k),
+                                   stroke_linecap="round",
+                                   stroke_linejoin="round"))
+
     def _draw_voice_bracket(self, left, top, bottom, k):
         """多声部左侧括线: 粗 4px + 细 2px 两根竖线, 两端再用一条斜线把
         两根竖线连起来 (参考实现的 shengbufu_shang / shengbufu_xia 字形)。
