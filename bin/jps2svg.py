@@ -136,6 +136,7 @@ UNIT_LONG = 2.0                     # 前一音符 > 半拍时的间距
 UNIT_BAR = 1.4                      # 与小节线相邻
 UNIT_END = 2.0                      # 行末最后一小节收尾
 UNIT_PAI = 1.0                      # 临时拍号占用的小节内宽度
+SBF_PAD = 20                        # &sbf 行内多声部: 小节线后再让出的空间
 
 # 倚音 (参考实现用预组合的 qy 字形, 实测参数):
 #   最右侧倚音数字中心 = 主音符中心 - 12; 组内相邻数字间距 7
@@ -1236,7 +1237,17 @@ class Renderer(object):
             grid.append(lead_coef(m) + acc)
             gcum.append(seq)
         total = sum(grid) or 1.0
-        u = (right - left) / total
+        # &sbf (行内才出现第二声部): 该小节线后面要画声部括线, 参考实现在
+        # 小节线之后多留 SBF_PAD px, 否则括线会压在小节线上。
+        sbf_m = None
+        for vi in range(nv):
+            for m in range(nmeas - 1):
+                bar = voices[vi][m][1] if m < len(voices[vi]) else None
+                if bar is not None and getattr(bar, "sbf", False):
+                    if sbf_m is None or m + 1 < sbf_m:
+                        sbf_m = m + 1
+        sbf_pad = SBF_PAD * k if sbf_m is not None else 0.0
+        u = (right - left - sbf_pad) / total
         # 末行不拉伸到右边界: 参考实现让末行沿用上一行的单位宽度 (同样的
         # 疏密), 只有末行自身更密时才用它自己的值。
         if last:
@@ -1247,13 +1258,14 @@ class Renderer(object):
         # 临时拍号画在小节线右侧 UNIT_PAI 个单位宽处 (参考实现实测)
         self._pai_dx = UNIT_PAI * u
 
-        # 小节起点 (= 上一个小节末尾的小节线位置)
+        # 小节起点 (= 上一个小节末尾的小节线位置); sbf_m 之后整体右移
         mstart = []
         x = left
         for m in range(nmeas):
-            mstart.append(x)
+            mstart.append(x + (sbf_pad if sbf_m is not None and m > sbf_m
+                               else 0.0))
             x += grid[m] * u
-        mend = mstart + [x]
+        mend = mstart + [x + sbf_pad]
 
         # --- 2. 计算每个声部每个音符的 x 位置 ---
         pos = []                        # pos[vi][m] = [(x, el), ...]
@@ -1269,6 +1281,8 @@ class Renderer(object):
                 for i, el in enumerate(notes):
                     o = onsets[i] if i < len(onsets) else 0.0
                     px = mstart[m] + (lead + cum_lookup(gcum[m], o)) * u
+                    if sbf_m is not None and m == sbf_m:
+                        px += sbf_pad
                     lst.append((px, el))
                 pv.append(lst)
                 bv.append((mend[m + 1], bar))
