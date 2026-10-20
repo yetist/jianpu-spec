@@ -137,6 +137,16 @@ UNIT_BAR = 1.4                      # 与小节线相邻
 UNIT_END = 2.0                      # 行末最后一小节收尾
 UNIT_PAI = 1.0                      # 临时拍号占用的小节内宽度
 
+# 倚音 (参考实现用预组合的 qy 字形, 实测参数):
+#   最右侧倚音数字中心 = 主音符中心 - 12; 组内相邻数字间距 7
+#   数字基线 = 音符基线 - 14, 字号约 12.5
+#   减时线 = 1 + 该组最多的 '/' 数, 位于基线下方 10.5/8.5/6.5
+GRACE_DX = 12.0                     # 倚音数字中心到主音符中心的距离
+GRACE_STEP = 7.0                    # 组内相邻倚音的间距
+GRACE_SIZE = 12.5                   # 倚音数字字号
+GRACE_BASE = 14.0                   # 倚音数字基线抬高量
+GRACE_UNDER = 3.5                   # 减时线相对数字中心的半宽
+
 
 def is_punct(ch):
     return unicodedata.category(ch).startswith("P")
@@ -503,9 +513,9 @@ def parse_note(tok):
                 j = n - 1
             grp = tok[i:j + 1]
             if grp[1:2] == "h":
-                el.grace_back.append(grp)
+                el.grace_back.append(parse_graces(grp[2:-1]))
             else:
-                el.grace_front.append(grp)
+                el.grace_front.append(parse_graces(grp[1:-1]))
             i = j
         elif c == '"':
             j = tok.find('"', i + 1)
@@ -805,6 +815,32 @@ def duration(el):
     return d
 
 
+def parse_graces(inner):
+    """把 "[..]" 里的倚音串拆成 [(数字, 八度, 减时线数), ...]。"""
+    out = []
+    i, n = 0, len(inner)
+    while i < n:
+        c = inner[i]
+        if not c.isdigit():
+            i += 1
+            continue
+        octv = 0
+        slashes = 0
+        j = i + 1
+        while j < n and inner[j] in ",'":
+            octv += 1 if inner[j] == "'" else -1
+            j += 1
+        while j < n and inner[j] == "/":
+            slashes += 1
+            j += 1
+        while j < n and inner[j] in ",'":
+            octv += 1 if inner[j] == "'" else -1
+            j += 1
+        out.append((c, octv, slashes))
+        i = j
+    return out
+
+
 def coef(a, b, onset_a=None, onset_b=None):
     """两个相邻元素之间的时值系数 (相对单位宽度)。
 
@@ -816,9 +852,10 @@ def coef(a, b, onset_a=None, onset_b=None):
     if (a.slashes > 0 and b.slashes > 0 and onset_a is not None
             and onset_b is not None and int(onset_a) == int(onset_b)):
         return UNIT_SAME_BEAM
-    # 倚音需要额外空间
-    return (UNIT_LONG if duration(a) > 1.0 else UNIT_SHORT) \
-        + 0.6 * len(b.grace_front)
+    base = UNIT_LONG if duration(a) > 1.0 else UNIT_SHORT
+    # 倚音需要额外空间: 单音 0.6 个单位, 组内每多一个音再加 0.3
+    n_grace = sum(len(g) for g in b.grace_front)
+    return base + (0.6 + 0.3 * (n_grace - 1) if n_grace else 0.0)
 
 
 # --------------------------------------------------------------------------
@@ -1422,11 +1459,11 @@ class Renderer(object):
         # 附点
         for i in range(el.dots):
             self.dot(cx + (FUDIAN_DX + i * 7) * k, nb + 4 * k, DOT_R * k * 1.1)
-        # 倚音
+        # 倚音 (每组最右侧音符中心距主音符 GRACE_DX, 多个组依次再让开)
         for i, g in enumerate(el.grace_front):
-            self._draw_grace(g, cx - (12 + i * 9) * k, nb, fs * 0.55)
+            self._draw_grace(g, cx - (GRACE_DX + i * 9) * k, nb, back=False)
         for i, g in enumerate(el.grace_back):
-            self._draw_grace(g, cx + (12 + i * 9) * k, nb, fs * 0.55)
+            self._draw_grace(g, cx + (GRACE_DX + i * 9) * k, nb, back=True)
         # 音符注释
         if el.text:
             self.text(el.text, cx, nb - 22 * k, SMALL * k, family=FONT_SANS)
@@ -1516,16 +1553,44 @@ class Renderer(object):
         self.dwg.add(self.dwg.path(d=d, fill="none", stroke="#1b1b1b",
                                    stroke_width="%.2fpx" % (1.6 * k)))
 
-    def _draw_grace(self, grp, cx, nb, size):
-        inner = grp.strip("[]")
-        if inner.startswith("h"):
-            inner = inner[1:]
-        nums = [c for c in inner if c.isdigit()]
-        if not nums:
+    def _draw_grace(self, notes, cx, nb, back=False):
+        """画一组倚音: 小号数字 + 减时线 + 八度点 + 指向主音符的小钩。"""
+        if not notes:
             return
         k = self.k
-        self.text(nums[-1], cx, nb - 10 * k, max(size, 10 * k),
-                  family=FONT_NOTE)
+        n = len(notes)
+        step = GRACE_STEP * k
+        # cx 是组内最靠近主音符的那个数字的中心
+        if back:
+            xs = [cx + i * step for i in range(n)]
+        else:
+            xs = sorted(cx - i * step for i in range(n))
+        base = nb - GRACE_BASE * k
+        size = GRACE_SIZE * k
+        # 减时线: 1 + 组内最多 '/' 数, 自下而上排列
+        lines = 1 + max(sl for _, _, sl in notes)
+        left = xs[0] - GRACE_UNDER * k
+        right = xs[-1] + GRACE_UNDER * k
+        for j in range(lines):
+            y = nb - (10.5 - 2 * j) * k
+            self.line(left, y, right, y, 1.0 * k)
+        for x, (digit, octv, _sl) in zip(xs, notes):
+            self.text(digit, x, base, size, family=FONT_NOTE)
+            for i in range(octv):
+                self.dot(x, base - (10.5 + i * 6) * k, DOT_R * k * 0.85)
+            for i in range(-octv):
+                self.dot(x, base + (6.0 + i * 6) * k, DOT_R * k * 0.85)
+        # 倚音小钩 (参考实现 yiyinxian_qian): 数字下方弯向主音符的小笔画
+        gx = xs[-1] if not back else xs[0]
+        sgn = 1.0 if not back else -1.0
+        d = "M %.2f %.2f C %.2f %.2f %.2f %.2f %.2f %.2f" % (
+            gx - 0.5 * k, nb - 9.0 * k,
+            gx - 0.5 * k, nb - 9.0 * k,
+            gx + sgn * 1.2 * k, nb - 5.0 * k,
+            gx + sgn * 4.4 * k, nb - 4.4 * k)
+        self.dwg.add(self.dwg.path(d=d, fill="none", stroke="#1b1b1b",
+                                   stroke_width="%.2fpx" % (1.0 * k),
+                                   stroke_linecap="round"))
 
     # ---- 绘制小节线 ---------------------------------------------------
     def _draw_bar(self, bar, cx, nb):
