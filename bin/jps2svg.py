@@ -83,8 +83,6 @@ AUTH_BOTTOM_J = 226                 # 有速度行时作者块的底边
 AUTH_BOTTOM = 196                   # 无速度行时作者块的底边
 AUTH_GAP = 21                       # 作者行间距
 FIRST_GAP = 40                      # 描述头底部 -> 首行第一声部基线
-HEADER_BLANK_DROP = 20              # 描述头里每多一个空行(空 B:/Z: 或空行), 整个
-                                    # 描述头连同上边界一起上移这么多 (参考实测)
 DYN_PAD = 12                        # 首行上方若有力度记号再让出的空间
 HOUSE_PAD = 30                      # 跳房子横线距音符行的高度 (参考实现实测)
 HOUSE_STEP = 10                     # "[+" 每多一个 "+", 横线再抬高这么多
@@ -142,8 +140,10 @@ UNIT_LONG = 2.0                     # 前一音符 > 半拍时的间距
 UNIT_BAR = 1.4                      # 与小节线相邻
 UNIT_END = 2.0                      # 行末最后一小节收尾
 UNIT_PAI = 1.0                      # 临时拍号占用的小节内宽度
-TEMP_DY = 28                        # 临时伴奏/多声部: 主声部下移 / 临时声部上移
-TEMP_PAD = 20                       # 临时伴奏/多声部: 花括号两侧的固定留白
+TEMP_DY = 28                        # 临时多声部 {dsb}: 主声部下移 / 临时声部上移
+TEMP_DY_BZ = 40                     # 临时伴奏 {bz}: 临时声部在主声部上方的高度
+TEMP_SCALE_BZ = 0.78                # 临时伴奏 {bz} 的数字缩小比例 (参考实现小号数字)
+TEMP_PAD = 20                       # 临时多声部: 花括号两侧的固定留白
 SBF_PAD = 20                        # &sbf 行内多声部: 小节线后再让出的空间
 
 # 跨行连音线: 两端各画半段弧线, 行末那半再用平线连到右边界
@@ -310,7 +310,6 @@ class Header(object):
         self.tempo_num = ""
         self.number = ""
         self.page = "A4"
-        self.header_blanks = 0      # 描述头里的空行数 (空 B:/Z: 行或空行)
 
 
 class LyricLine(object):
@@ -824,9 +823,6 @@ def parse_jps(text):
         if not line:
             if qgroup:                      # 空行 => 开始新的 system
                 flush_group()
-            elif not items:
-                # 描述头里的空行: 参考实现会因此把整个描述头上提 (实测)
-                header.header_blanks += 1
             prev_kind = None
             continue
         if line.startswith("#"):
@@ -884,12 +880,8 @@ def parse_jps(text):
             if key == "V":
                 header.version = val
             elif key == "B":
-                if not val and not items:
-                    header.header_blanks += 1
                 header.titles.append(val)
             elif key == "Z":
-                if not val and not items:
-                    header.header_blanks += 1
                 header.authors.append(val)
             elif key == "D":
                 header.key, header.key_acc = parse_key(val)
@@ -1009,10 +1001,10 @@ class Renderer(object):
     @staticmethod
     def _svg_text(dwg, s, x, y, size, anchor="middle", family=FONT_NOTE,
                   fill="#1b1b1b", weight="normal", style="normal"):
-        dwg.add(dwg.text(s, insert=(x, y),
-                         font_size="%.2fpx" % size, font_family=family,
-                         text_anchor=anchor, fill=fill, font_weight=weight,
-                         font_style=style))
+        dwg.add(svgwrite.text.Text(
+            s, insert=(x, y), font_size="%.2fpx" % size, font_family=family,
+            text_anchor=anchor, fill=fill, font_weight=weight,
+            font_style=style))
 
     def text(self, s, x, y, size, anchor="middle", family=FONT_NOTE,
              fill="#1b1b1b", weight="normal", style="normal"):
@@ -1020,16 +1012,15 @@ class Renderer(object):
                        weight, style)
 
     def line(self, x1, y1, x2, y2, width=1.5):
-        self.dwg.add(self.dwg.line(start=(x1, y1), end=(x2, y2),
-                                   stroke="#1b1b1b",
-                                   stroke_width="%.2fpx" % width,
-                                   stroke_linecap="round"))
+        self.dwg.add(svgwrite.shapes.Line(
+            start=(x1, y1), end=(x2, y2), stroke="#1b1b1b",
+            stroke_width="%.2fpx" % width, stroke_linecap="round"))
 
     def dot(self, x, y, r=None):
         if r is None:
             r = DOT_R * self.k
-        self.dwg.add(self.dwg.circle(center=(x, y), r="%.2fpx" % r,
-                                     fill="#1b1b1b"))
+        self.dwg.add(svgwrite.shapes.Circle(
+            center=(x, y), r="%.2fpx" % r, fill="#1b1b1b"))
 
     # ---- 主入口 -------------------------------------------------------
     def render(self, items, outfile):
@@ -1080,9 +1071,9 @@ class Renderer(object):
         k = self.k
         h = self.header
         dwg = self.dwg
-        # 描述头里的空行(空行或空 B:/Z: 行)会让参考实现把描述头整块上提,
-        # 连带首行谱也跟着上移 (实测 012/015/016 比常规高 20).
-        dy = -HEADER_BLANK_DROP * getattr(h, "header_blanks", 0)
+        # 参考实现 (bin/jianpu.py) 不会因为描述头里多出空行/空 B:/Z: 行而
+        # 上提整块描述头: 空行只是让作者块/标题块多占一行, 谱行起点不变。
+        dy = 0.0
         if h.titles:
             self.text(h.titles[0], self.page_w / 2.0, (TITLE_Y + dy) * k,
                       TITLE_SIZE * k, family=FONT_SANS, weight="bold")
@@ -1170,7 +1161,6 @@ class Renderer(object):
         if nmeas == 0:
             return
         nv = len(qlines)
-        nl = len(lyrics)
 
         # 临时伴奏 / 临时多声部 ({bz ...} / {dsb ...}): 与主旋律同时进行,
         # 从主旋律的第 m0 个小节开始占用若干小节。参考实现把这些小节展开
@@ -1231,7 +1221,10 @@ class Renderer(object):
             else:
                 clusters.append([None, [lobj]])
         interleaved = any(clusters[i][1] for i in range(len(clusters) - 1))
-        tight = interleaved or (nv == 1 and nl >= 2)
+        # 只有歌词与声部交错 (多声部谱) 时, 首行歌词才"贴"进声部行距里;
+        # 单声部下方连着几行歌词时, 首行与其余行同样按 LYRIC_LINE 递进
+        # (参考实现实测 015/016: 4 行/2 行歌词的簇高都是 78+28*n)。
+        tight = interleaved
         if self.style_tight:
             ly_lead = self.style_lead
         else:
@@ -1434,17 +1427,19 @@ class Renderer(object):
                     if sbf_m is None or m + 1 < sbf_m:
                         sbf_m = m + 1
         sbf_pad = SBF_PAD * k if sbf_m is not None else 0.0
-        # 临时伴奏/多声部: 花括号所在的小节两侧各留 TEMP_PAD px 固定空白
-        # (参考实现实测: 花括号不会紧贴音符)。
+        # 临时多声部 {dsb..}: 区间两端各画一个花括号, 花括号所在的小节两侧
+        # 各留 TEMP_PAD px 固定空白 (参考实现实测: 花括号不会紧贴音符)。
+        # 临时伴奏 {bz..} 没有花括号, 也不留空白。
         pad_l = [0.0] * nmeas
         pad_r = [0.0] * nmeas
         for t in temps:
+            if t["block"].kind != "dsb":
+                continue
             m0, n = t["m0"], t["n"]
             end = m0 + n
             if end > nmeas:
                 continue
-            if sum(grid[:m0]) > 1e-6:
-                pad_l[m0] = TEMP_PAD * k
+            pad_l[m0] = TEMP_PAD * k
             if end < nmeas:
                 pad_r[end - 1] = TEMP_PAD * k
         temp_pad = sum(pad_l) + sum(pad_r)
@@ -1517,11 +1512,39 @@ class Renderer(object):
             tpos.append(lst)
 
         def span_dy(vi, m):
-            """该小节里主声部要下移的距离 (0 表示不在临时声部区间内)。"""
+            """该小节里主声部要下移的距离 (0 表示不下移)。
+
+            临时多声部 {dsb..} 是把两行并排写成一组: 临时声部在上方
+            (基线 - TEMP_DY), 主声部压到下方 (基线 + TEMP_DY)。临时伴奏
+            {bz..} 只是在上方多一行, 主声部仍在基线上 (参考实现实测)。
+            """
             for t in temps:
-                if t["vi"] == vi and t["m0"] <= m < t["m0"] + t["n"]:
+                if (t["vi"] == vi and t["block"].kind == "dsb"
+                        and t["m0"] <= m < t["m0"] + t["n"]):
                     return TEMP_DY * k
             return 0.0
+
+        def span_any(vi, m):
+            """该小节是否在某个临时声部区间内 (不论类型)。"""
+            for t in temps:
+                if t["vi"] == vi and t["m0"] <= m < t["m0"] + t["n"]:
+                    return True
+            return False
+
+        def temp_up(vi, m=None):
+            """临时声部那一行相对主声部基线的上移量 (0 表示没有)。
+
+            m 为 None 时取该声部所有临时块的最大值。
+            """
+            up = 0.0
+            for t in temps:
+                if t["vi"] != vi:
+                    continue
+                if m is not None and not (t["m0"] <= m < t["m0"] + t["n"]):
+                    continue
+                up = max(up, (TEMP_DY if t["block"].kind == "dsb"
+                              else TEMP_DY_BZ) * k)
+            return up
 
         def span_end(vi, m):
             for t in temps:
@@ -1538,23 +1561,30 @@ class Renderer(object):
         lyric_anchor = {}               # id(lyric) -> 所属声部序号
         cursor = self.y
         for q, lys in clusters:
-            shifted = False
+            up = 0.0                    # 本簇上方要留出临时声部那一行的高度
+            down = False                # 主声部整簇下移 (只有 {dsb} 会)
             if q is not None:
-                # 带临时伴奏/多声部的声部: 临时声部占音符行的位置, 本声部
-                # 下移 TEMP_DY, 歌词再跟着下移同样的距离 (参考实现实测)
-                shifted = any(t["vi"] == qindex.get(id(q)) for t in temps)
-                if shifted:
-                    cursor += TEMP_DY * k
+                # 带临时伴奏/多声部的声部: 临时声部在基线上方一行, 簇先让出
+                # 那一行的高度; {dsb} 的主声部还要压到下方一行。
+                vi0 = qindex.get(id(q))
+                up = temp_up(vi0)
+                down = any(t["vi"] == vi0 and t["block"].kind == "dsb"
+                           for t in temps)
+                if up:
+                    cursor += up
                 vy[id(q)] = cursor
                 cursor += self.vgap * k
+                if down and not lys:
+                    # 没有歌词时, 主声部下方那一行也要占簇高
+                    cursor += TEMP_DY * k
             nb = vy.get(id(q)) if q is not None else self.y
             for j, ly in enumerate(lys):
                 lyric_y[id(ly)] = nb + (self.lyric_off + j * LYRIC_LINE
-                                        + (TEMP_DY if shifted else 0)) * k
+                                        + (TEMP_DY if down else 0)) * k
                 lyric_anchor[id(ly)] = qindex.get(id(q), 0)
             if lys:
                 cursor += (ly_lead + LYRIC_LINE * (len(lys) - 1)) * k
-                if shifted:                 # 歌词已随声部下移, 簇也相应加高
+                if down:                    # 歌词已随声部下移, 簇也相应加高
                     cursor += TEMP_DY * k
 
         # --- 4. 绘制各声部 ---
@@ -1584,26 +1614,22 @@ class Renderer(object):
                 bx, bar = barx[vi][m]
                 if bar is None:
                     continue
-                dy = span_dy(vi, m)
-                # 区间在行中间结束时, 收尾小节线回到基本行, 与区间起点的小节线
-                # 同高 (参考实现实测); 区间一直延续到行末时, 行末小节线仍旧
-                # 跟着下移后的主声部。
-                if dy and span_end(vi, m) and bx < right - 0.5:
-                    self._draw_bar(bar, bx, nb)
-                else:
-                    self._draw_bar(bar, bx, nb + dy)
-                # 临时声部区间内部的小节线上下两行都要画
-                if dy > 0 and not span_end(vi, m):
-                    self._draw_bar(bar, bx, nb - TEMP_DY * k)
+                self._draw_bar(bar, bx, nb + span_dy(vi, m))
+                # 临时声部区间内部的小节线上下两行都要画; 区间收尾的小节线
+                # 只画在主声部 (参考实现里临时声部那一行是空白的)。
+                if span_any(vi, m) and not span_end(vi, m):
+                    self._draw_bar(bar, bx, nb - temp_up(vi, m))
             slots.append(sl)
             self._draw_hairpins(q, idpos, nb)
 
         # --- 4b. 临时伴奏 / 临时多声部声部 ---
         for t, lst in zip(temps, tpos):
             tq = qlines[t["vi"]]
-            tnb = vy.get(id(tq), self.y) - TEMP_DY * k
+            up = (TEMP_DY if t["block"].kind == "dsb" else TEMP_DY_BZ) * k
+            tnb = vy.get(id(tq), self.y) - up
             for (px, el, m) in lst:
-                self._draw_note(el, px, tnb)
+                self._draw_note(el, px, tnb,
+                                TEMP_SCALE_BZ if t["block"].kind == "bz" else 1.0)
                 idpos[id(el)] = (px, tnb)
             for j, (notes, bar) in enumerate(t["meas"]):
                 m = t["m0"] + j
@@ -1631,19 +1657,20 @@ class Renderer(object):
                 self._draw_voice_bracket(min(xs) if xs else sbf_bar,
                                          vtop, vbot, k)
 
-        # --- 5b. 临时伴奏/多声部的花括号 ---
-        # 参考实现只在区间两端各画一个花括号, 起止正好落在谱行两端时不画
-        # (如从行首开始、到行末结束的情形)。
+        # --- 5b. 临时多声部的花括号 ---
+        # 参考实现: 区间起点 (哪怕就在行首) 总画左花括号, 区间收尾正好落在
+        # 行末时不画右花括号。花括号距区间两端的小节线 20px。
         for t in temps:
+            if t["block"].kind != "dsb":
+                continue
             nb = vy.get(id(qlines[t["vi"]]), self.y)
             m0, n = t["m0"], t["n"]
             end = m0 + n
             if end > nmeas:
                 continue
-            if mstart[m0] > left + 0.5:
-                self._draw_curly(mstart[m0] + 13.6 * k, nb, k, 1)
+            self._draw_curly(mstart[m0] + TEMP_PAD * k, nb, k, 1)
             if mend[end] < right - 0.5:
-                self._draw_curly(mend[end] - 13.6 * k, nb, k, -1)
+                self._draw_curly(mend[end] - TEMP_PAD * k, nb, k, -1)
 
         # --- 6. 连音线 ---
         for vi, q in enumerate(qlines):
@@ -1747,7 +1774,21 @@ class Renderer(object):
                 s = t
 
     # ---- 绘制一个音符 -------------------------------------------------
-    def _draw_note(self, el, cx, nb):
+    def _draw_note(self, el, cx, nb, scale=1.0):
+        if scale != 1.0:
+            # 缩小绘制 (临时伴奏 {bz..} 用的是参考实现的小号数字): 以音符
+            # 锚点为中心整体缩放, 数字/八度点/附点/倚音一起缩小。
+            g = self.dwg.g(transform=("translate(%.3f %.3f) scale(%.4f) "
+                                      "translate(%.3f %.3f)"
+                                      % (cx, nb, scale, -cx, -nb)))
+            self.dwg.add(g)
+            old = self.dwg
+            self.dwg = g
+            try:
+                self._draw_note(el, cx, nb, 1.0)
+            finally:
+                self.dwg = old
+            return
         if el.pitch is None or el.pitch == "8":
             return
         k = self.k
