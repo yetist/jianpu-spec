@@ -153,7 +153,7 @@ def jianpu(args):
         else:
             newpath = os.path.join(args.outdir, "%s-%d.svg" % (names[0], i))
             outpath = os.path.join(
-                args.outdir, "%s-%d" + "." + args.format % (names[0], i)
+                args.outdir, "%s-%d.%s" % (names[0], i, args.format)
             )
         fw = open(newpath, "w+")
         fw.write(music[i].replace("&", "+"))
