@@ -326,6 +326,8 @@ class LyricLine(object):
         self.raw = text
         self.tokens = []
         self.annotation = ""
+        self.brace_at = -1           # "{" 记号在第几个槽位 (多行歌词大括号)
+        self.brace_close = -1        # "}" 记号在第几个槽位
         self.parse()
 
     def parse(self):
@@ -354,6 +356,13 @@ class LyricLine(object):
                 self.tokens.append(None)
                 i += 1
             elif c in "{}":
+                # 多行歌词共用一个音符段时, 用 { } 把要并列的几行歌词括起来,
+                # 参考实现在歌词左侧画一个纵向拉长的大括号。记下记号所在的
+                # 槽位, 供排版时决定大括号的位置。
+                if c == "{":
+                    self.brace_at = len(self.tokens)
+                else:
+                    self.brace_close = len(self.tokens)
                 i += 1
             elif c in "-/":
                 i += 1
@@ -1687,6 +1696,24 @@ class Renderer(object):
         # 一字一音: 依次落到所属声部的音符上 (歌词行上方的那个声部)。连音线的
         # 结束音同样占一个歌词位, 只有源码里的 ``@`` 才会"吃掉"紧跟其后的一个
         # 音符。
+        # 多行歌词大括号: "{ ... }" 把同一个音符段下的几行歌词括在一起, 参考
+        # 实现在歌词左侧画一个纵向拉长的大括号, 高度覆盖整个歌词组。
+        lyric_brace = {}                # id(组首行) -> (首行 y, 末行 y, 槽位)
+        for q, lys in clusters:
+            i = 0
+            while i < len(lys):
+                if lys[i].brace_at < 0:
+                    i += 1
+                    continue
+                j = i
+                while j < len(lys) and lys[j].brace_close < 0:
+                    j += 1
+                j = min(j, len(lys) - 1)
+                y0 = lyric_y.get(id(lys[i]), self.y)
+                y1 = lyric_y.get(id(lys[j]), y0)
+                lyric_brace[id(lys[i])] = (y0, y1, lys[i].brace_at)
+                i = j + 1
+
         for lyric in lyrics:
             ly = lyric_y.get(id(lyric), self.y)
             vi = lyric_anchor.get(id(lyric), 0)
@@ -1712,6 +1739,17 @@ class Renderer(object):
             for sx, txt in placed:
                 self.text(txt, sx - LYRIC_SIZE * k / 2.0, ly,
                           LYRIC_SIZE * k, anchor="start", family=FONT_SANS)
+            br = lyric_brace.get(id(lyric))
+            idx = -1
+            if br is not None:
+                # "{" 记的是 token 序号, 而 @ 空槽不会生成歌词, 换算成 placed
+                # 的下标 (前导 @ 的个数要减掉)。
+                idx = br[2] - sum(1 for t in lyric.tokens[:br[2]] if t is None)
+            if 0 <= idx < len(placed):
+                bx = placed[idx][0] - (LYRIC_SIZE * 0.5 + 6.0) * k
+                self._draw_curly(bx, (br[0] + br[1]) / 2.0, k,
+                                 half=(br[1] - br[0]) / 2.0 + 6.6 * k,
+                                 wscale=0.65, width=1.5)
 
         self._last_bottom = max(self._last_bottom, self.y + sys_bottom)
         self.y = cursor
@@ -2004,17 +2042,21 @@ class Renderer(object):
         _ = dots
 
     # ---- 声部括弧 -----------------------------------------------------
-    def _draw_curly(self, x, y, k, face=1):
+    def _draw_curly(self, x, y, k, face=1, half=None, wscale=1.0, width=2.0):
         """临时伴奏/多声部区间的花括号 (对应参考实现 dakuohu_zuo_2/_you_2)。
 
         face=1 为左花括号 "{" (尖端朝左), face=-1 为右花括号 "}"。上下各
-        伸出 39.6px, 覆盖上下两行音符。
+        伸出 39.6px, 覆盖上下两行音符。half 可给出实际的半高 (px),
+        wscale 缩放横向宽度 (歌词大括号比谱面大括号窄)。
         """
         pts = [(5.4, -38.8), (1.5, -34.0), (0.6, -24.0), (0.6, -16.0),
                (0.6, -8.0), (-0.3, -3.0), (-3.5, -0.9), (-3.5, 0.9),
                (-0.3, 3.0), (0.6, 8.0), (0.6, 16.0), (0.6, 24.0),
                (1.5, 34.0), (5.4, 38.8)]
-        p = [(x + px * face * k, y + py * k) for (px, py) in pts]
+        if half is None:
+            half = 38.8 * k
+        sy = half / 38.8
+        p = [(x + px * face * wscale * k, y + py * sy) for (px, py) in pts]
         d = ("M %.2f %.2f C %.2f %.2f %.2f %.2f %.2f %.2f "
              "C %.2f %.2f %.2f %.2f %.2f %.2f "
              "L %.2f %.2f "
@@ -2022,7 +2064,7 @@ class Renderer(object):
              "C %.2f %.2f %.2f %.2f %.2f %.2f") % tuple(
                  v for pt in p for v in pt)
         self.dwg.add(self.dwg.path(d=d, fill="none", stroke="#1b1b1b",
-                                   stroke_width="%.2fpx" % (2 * k),
+                                   stroke_width="%.2fpx" % (width * k),
                                    stroke_linecap="round",
                                    stroke_linejoin="round"))
 
