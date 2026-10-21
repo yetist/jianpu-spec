@@ -1,0 +1,138 @@
+(*
+ * 番茄简谱脚本 v2.0 —— 语法摘要（EBNF）
+ *
+ * 说明：
+ *   1. 本文件是 01-规范正文.md 的辅助材料，不替代正文中的语义规则。
+ *   2. 行尾单独的 "\" 是续行，在词法分析前拼接；下面的 grammar 不体现。
+ *   3. 注释 "%..." 和块注释 "%{...%}" 在词法分析阶段剔除。
+ *   4. 歌词的音节切分是 Unicode 规则，不是简单的字符级 EBNF；见正文第 9 节。
+ *   5. 空白在事件边界明确的地方可以省略；下面用 ws 表示可选的空白。
+ *)
+
+file            = { line } ;
+
+line            = blank
+                | comment
+                | block-comment
+                | directive
+                | voice-line
+                | lyric-line ;
+
+blank           = ws, newline ;
+comment         = ws, "%", { any - newline }, newline ;
+block-comment   = ws, "%{", { any - "%}" }, "%}", newline ;
+
+(* ---------- 描述头 ---------- *)
+
+directive       = ws, "@", key, [ ws, value ], newline ;
+key             = lower, { lower | digit | "." | "-" } ;
+value           = quoted | { any - newline } ;
+quoted          = '"', { escaped | any - '"' }, '"' ;
+escaped         = "\\", ( '"' | "\\" | "n" | "t" | "u", hex, hex, hex, hex ) ;
+
+(* ---------- 声部行 / 歌词行 ---------- *)
+
+voice-line      = ws, "V", [ digits ], ":", body, newline ;
+lyric-line      = ws, "L", [ "(", digits, ")" ], ":", lyric-body, newline ;
+
+(* ---------- 曲谱主体 ---------- *)
+
+body            = { ws | event } ;
+
+event           = bar
+                | note
+                | extension
+                | tie
+                | slur-open
+                | slur-close
+                | tuplet
+                | grace
+                | beam-group
+                | voice-block
+                | command ;
+
+(* 小节线 *)
+bar             = [ ":" ], "|", [ "|" | "]" | ":" ], [ ending-label ] ;
+ending-label    = digits, { ",", digits }, "." ;
+
+(* 音符：修饰符顺序不限，数量决定语义 *)
+note            = pitch, { octave | accidental | dot | slash } ;
+pitch           = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "x" ;
+octave          = "'" | "," ;
+accidental      = "#" | "b" | "n" ;
+dot             = "." ;
+slash           = "/" ;
+
+extension       = "-" ;
+tie             = "~" ;
+slur-open       = "(" ;
+slur-close      = ")" ;
+
+(* 多连音：N:M{...} 或 \tuplet(N:M){...} *)
+tuplet          = ( digits, ":", digits | "\\tuplet", "(", args, ")" ),
+                  "{", body, "}" ;
+
+(* 倚音 *)
+grace           = "[", grace-body, "]"
+                | "\\grace", [ "(", args, ")" ], "{", grace-body, "}" ;
+grace-body      = { ws | grace-note } ;
+grace-note      = pitch, { octave | accidental | dot | slash } ;
+
+(* 减时线连接覆盖 *)
+beam-group      = "\beam", "{", body, "}" ;
+
+(* 临时声部块 *)
+voice-block     = "\voice", "(", args, ")", "{", body, "}" ;
+
+(* 一般命令：力度、记号、结构、文本、分组等 *)
+command         = "\\", ( name | "<" | ">" | "!" ), [ "(", args, ")" ], [ "{", body, "}" ] ;
+name            = lower, { lower | digit | "-" } ;
+args            = arg, { ws, ",", ws, arg } ;
+arg             = quoted
+                | number
+                | ratio
+                | key-spec
+                | beat-spec
+                | tempo-spec
+                | bareword
+                | name, "=", ( quoted | number | ratio | bareword ) ;
+bareword        = lower, { lower | digit | "-" } ;
+number          = [ "-" ], digits, [ ".", digits ] ;
+ratio           = digits, "/", digits | digits, ":", digits ;
+key-spec        = digits, "=", [ "#" | "b" ], ( "A" | "B" | "C" | "D" | "E" | "F" | "G" ) ;
+beat-spec       = digits, { "+", digits } ;
+tempo-spec      = digits, "=", digits ;
+
+(* ---------- 歌词 ---------- *)
+
+(*
+ * 歌词行的完整规则见正文 9.3。这里只给出结构：
+ *
+ *   lyric-body   = [ label ], { ws | lyric-unit } ;
+ *   label        = quoted ;                 (* 行首段落标签，如 "1." *)
+ *   lyric-unit   = syllable | "_" | "~" | "-" | escape | lyric-command ;
+ *   syllable     = 汉字 | 拉丁词 | 其他字素簇 ;
+ *   escape       = "\\", any ;
+ *   lyric-command= "\text", "(", quoted, [ ",", (above|below) ], ")" ;
+ *
+ * 关键规则：
+ *   - 汉字逐字成原子；
+ *   - 拉丁词按 "-" 切分音节；
+ *   - "_" 是空原子；
+ *   - "~" 把下一个原子并入当前原子；
+ *   - 标点并入前一个原子；
+ *   - 空格分隔原子，并在两个拉丁原子之间保留显示空格。
+ *)
+
+(* ---------- 词法辅助 ---------- *)
+
+digits          = digit, { digit } ;
+digit           = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+lower           = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i"
+                | "j" | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r"
+                | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z" ;
+hex             = digit | "a" | "b" | "c" | "d" | "e" | "f"
+                | "A" | "B" | "C" | "D" | "E" | "F" ;
+ws              = " " | "\t" ;
+newline         = "\n" | "\r\n" ;
+any             = ? any Unicode scalar value ? ;
