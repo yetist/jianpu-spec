@@ -920,14 +920,6 @@ def duration(el):
     return d * getattr(el, "tup", 1.0)
 
 
-def text_width(s, size):
-    """估算一段文字的宽度 (CJK 按全角, 其余按 0.55 倍字号)。"""
-    w = 0.0
-    for ch in s:
-        w += size if ord(ch) > 0x2E7F else size * 0.55
-    return w
-
-
 def parse_graces(inner):
     """把 "[..]" 里的倚音串拆成 [(数字, 八度, 减时线数), ...]。"""
     out = []
