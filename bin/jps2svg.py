@@ -2436,7 +2436,9 @@ class Renderer(object):
                     "M %.2f %.2f C %.2f %.2f %.2f %.2f %.2f %.2f") % (
                         x1, y, c1, y - top, c2, y - top, x2, y,
                         x2, y, c2, y - top + k, c1, y - top + k, x1, y)
-            self.dwg.add(self.dwg.path(d=path, fill="none", stroke="#1b1b1b",
+            # 参考实现不写 fill, 两条方向相反的子路径之间那 1px 的缝隙
+            # 会被填黑, 弧线因此比单纯 0.5px 描边略粗、两端更尖。
+            self.dwg.add(self.dwg.path(d=path, stroke="#1b1b1b",
                                        stroke_width="%.2fpx" % (0.5 * k)))
         else:
             # 长连音线: 一条平线加两端小钩 (参考实现 lianyinxian_* 字形)。
