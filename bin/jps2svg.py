@@ -147,9 +147,55 @@ TEMP_SCALE_BZ = 0.78                # 临时伴奏 {bz} 的数字缩小比例 (�
 TEMP_PAD = 20                       # 临时多声部: 花括号两侧的固定留白
 SBF_PAD = 20                        # &sbf 行内多声部: 小节线后再让出的空间
 
-# 跨行连音线: 两端各画半段弧线, 行末那半再用平线连到右边界
-TIE_HALF_W = 11.7                   # 半段弧线的水平宽度
-TIE_HALF_TOP = 24.9                 # 弧顶离音符行的高度
+# 连音线: 短的一条细弧 (两端各往里收 1px, 两个控制点比端点高 10px),
+# 长的一条平线 + 两端小钩 (参考实现的 lianyinxian_zuo/_you 字形)。
+TIE_FLAT_MIN = 105                  # 两音符中心超过这个距离改用平线+小钩
+TIE_INSET = 1.0                     # 细弧端点从音符中心往里收
+TIE_CTRL = 10.0                     # 细弧控制点高度
+HOOK_ANCHOR = 12.0                  # 小钩起点离音符中心的水平距离
+HOOK_RISE = 10.0                    # 小钩起点比连音线端点高
+TUP_NUM_DY = 7.0                    # 连音数字中心比弧线高
+TUP_NUM_W = 9.7                     # 连音数字白底宽 (遮住弧线)
+TUP_NUM_H = 9.1                     # 连音数字白底高
+
+# 参考实现的花括号字形 (填充路径)。
+# dakuohu_zuo_2: 临时多声部区间用, 固定 79px 高, 锚点在字形中心。
+CURLY_TEMP_D = (
+    "m55.35585,12.01287l0,-1.51213c-1.92115,0.64801 -3.47848,2.57401 "
+    "-4.67193,5.77811s-1.79017,6.75013 -1.79017,10.6382c0,2.01608 "
+    "0.13099,4.37409 0.39296,7.07414s0.39296,4.80609 0.39296,6.31813c0,"
+    "2.01607 -0.3493,3.90611 -1.04791,5.6701s-1.65918,2.86206 "
+    "-2.88175,3.29407l0,1.72803c1.22255,0.432 2.18314,1.51202 "
+    "2.88175,3.24006s1.04791,3.6361 1.04791,5.72411c0,1.51203 -0.13099,"
+    "3.60004 -0.39296,6.26411s-0.39296,5.04015 -0.39296,7.12814c0,3.81605 "
+    "0.59673,7.32613 1.79017,10.53022s2.75078,5.13011 4.67193,5.77811l0,"
+    "-1.51202c-1.339,-0.79198 -2.32142,-2.08801 -2.94724,-3.88807s-0.93877,"
+    "-3.74411 -0.93877,-5.83212c0,-1.72803 0.1237,-3.96011 0.37113,-6.69612s"
+    "0.37112,-5.04004 0.37112,-6.91203c0,-2.88009 -0.42207,-5.67011 "
+    "-1.26622,-8.37016s-2.09582,-4.77013 -3.755,-6.21012c1.63006,-1.51202 "
+    "2.87447,-3.6361 3.73318,-6.37212s1.28804,-5.54407 1.28804,-8.42416c0,"
+    "-1.94404 -0.12368,-4.26609 -0.37112,-6.96614s-0.37113,-4.9141 "
+    "-0.37113,-6.64213c0,-2.16004 0.31294,-4.12211 0.93877,-5.88611s1.60823,"
+    "-3.07806 2.94724,-3.94208l0,-0.00002z")
+# ci_dakuohu_zuo: 多行歌词组用, 字形高 14.77px, 参考实现按 scale(1,4.2)
+# 拉高到 62px, 锚点就是歌词组的竖直中心。
+CURLY_LYRIC_D = (
+    "m3.4619,4.82551l0,0.19085c-1.38966,-0.08178 -2.51615,-0.32487 "
+    "-3.37943,-0.72928s-1.29492,-0.85197 -1.29492,-1.34269c0,-0.25446 "
+    "0.09476,-0.55207 0.28425,-0.89286s0.28425,-0.6066 0.28425,-0.79744c0,"
+    "-0.25446 -0.25266,-0.49301 -0.758,-0.71564s-1.20017,-0.36124 "
+    "-2.08452,-0.41576l0,-0.2181c0.88433,-0.05453 1.57917,-0.19085 "
+    "2.08452,-0.40894s0.758,-0.45893 0.758,-0.72247c0,-0.19085 -0.09476,"
+    "-0.45438 -0.28425,-0.79063s-0.28425,-0.63614 -0.28425,-0.89967c0,"
+    "-0.48164 0.43165,-0.92466 1.29492,-1.32907s1.98977,-0.64749 "
+    "3.37943,-0.72928l0,0.19083c-0.96857,0.09997 -1.67919,0.26355 -2.13188,"
+    "0.49074s-0.67905,0.47256 -0.67905,0.7361c0,0.21809 0.08948,0.49982 "
+    "0.26846,0.84515s0.26844,0.63613 0.26844,0.8724c0,0.36351 -0.30531,"
+    "0.71564 -0.91592,1.05643s-1.516,0.60207 -2.71616,0.78382c1.1791,"
+    "0.19084 2.07924,0.45893 2.70038,0.80425s0.93171,0.69975 0.93171,"
+    "1.06326c0,0.24535 -0.08947,0.53844 -0.26844,0.87922s-0.26846,0.62024 "
+    "-0.26846,0.83833c0,0.27263 0.22637,0.52027 0.67905,0.74292s1.16331,"
+    "0.38848 2.13188,0.49754l0,0l0,0.00003l0,-0.00001l-0.00001,-0.00001z")
 
 # 倚音 (参考实现用预组合的 qy 字形, 实测参数):
 #   最右侧倚音数字中心 = 主音符中心 - 12; 组内相邻数字间距 7
@@ -756,6 +802,22 @@ def merge_elements(raw):
             pending_opens = 0
             pending_multi = False
         merged.append(el)
+    # 增时线 ``-`` 不可能是连音线的端点: ``5 (- -`` 这种把左括弧单独写成
+    # 一段的写法, 参考实现把括弧挂在前一个音符上。
+    for i, el in enumerate(merged):
+        if not (isinstance(el, NoteEl) and el.is_hold):
+            continue
+        if not (el.opens or el.closes):
+            continue
+        for j in range(i - 1, -1, -1):
+            prev = merged[j]
+            if isinstance(prev, NoteEl) and not prev.is_hold:
+                prev.opens += el.opens
+                prev.multi = prev.multi or el.multi
+                prev.closes += el.closes
+                el.opens = el.closes = 0
+                el.multi = False
+                break
     return merged
 
 
@@ -1739,9 +1801,10 @@ class Renderer(object):
                 idx = br[2] - sum(1 for t in lyric.tokens[:br[2]] if t is None)
             if 0 <= idx < len(placed):
                 bx = placed[idx][0] - (LYRIC_SIZE * 0.5 + 6.0) * k
-                self._draw_curly(bx, (br[0] + br[1]) / 2.0, k,
-                                 half=(br[1] - br[0]) / 2.0 + 6.6 * k,
-                                 wscale=0.65, width=1.5)
+                # 参考实现固定 scale(1, 4.2) (高约 62px), 竖直中心落在
+                # 首行歌词基线下方半个行距处。
+                self._draw_curly(bx, br[0] + LYRIC_LINE * k / 2.0, k,
+                                 kind="lyric", sy=4.2)
 
         self._last_bottom = max(self._last_bottom, self.y + sys_bottom)
         self.y = cursor
@@ -2034,31 +2097,24 @@ class Renderer(object):
         _ = dots
 
     # ---- 声部括弧 -----------------------------------------------------
-    def _draw_curly(self, x, y, k, face=1, half=None, wscale=1.0, width=2.0):
-        """临时伴奏/多声部区间的花括号 (对应参考实现 dakuohu_zuo_2/_you_2)。
+    def _draw_curly(self, x, y, k, face=1, kind="temp", sy=1.0):
+        """花括号 (直接用参考实现的填充字形)。
 
-        face=1 为左花括号 "{" (尖端朝左), face=-1 为右花括号 "}"。上下各
-        伸出 39.6px, 覆盖上下两行音符。half 可给出实际的半高 (px),
-        wscale 缩放横向宽度 (歌词大括号比谱面大括号窄)。
+        kind="temp" 用 dakuohu_zuo_2 (临时多声部区间, 高 79px, 锚点在中心);
+        kind="lyric" 用 ci_dakuohu_zuo (多行歌词组, 原高 14.77px, 按 sy 拉伸,
+        锚点在中心)。face=-1 画右花括号 (横向镜像)。
         """
-        pts = [(5.4, -38.8), (1.5, -34.0), (0.6, -24.0), (0.6, -16.0),
-               (0.6, -8.0), (-0.3, -3.0), (-3.5, -0.9), (-3.5, 0.9),
-               (-0.3, 3.0), (0.6, 8.0), (0.6, 16.0), (0.6, 24.0),
-               (1.5, 34.0), (5.4, 38.8)]
-        if half is None:
-            half = 38.8 * k
-        sy = half / 38.8
-        p = [(x + px * face * wscale * k, y + py * sy) for (px, py) in pts]
-        d = ("M %.2f %.2f C %.2f %.2f %.2f %.2f %.2f %.2f "
-             "C %.2f %.2f %.2f %.2f %.2f %.2f "
-             "L %.2f %.2f "
-             "C %.2f %.2f %.2f %.2f %.2f %.2f "
-             "C %.2f %.2f %.2f %.2f %.2f %.2f") % tuple(
-                 v for pt in p for v in pt)
-        self.dwg.add(self.dwg.path(d=d, fill="none", stroke="#1b1b1b",
-                                   stroke_width="%.2fpx" % (width * k),
-                                   stroke_linecap="round",
-                                   stroke_linejoin="round"))
+        if kind == "temp":
+            d = CURLY_TEMP_D
+            tr = ("translate(%.3f %.3f) scale(%.4f %.4f) translate(-50 -50)"
+                  % (x, y, face * k, k))
+        else:
+            d = CURLY_LYRIC_D
+            tr = ("translate(%.3f %.3f) scale(%.4f %.4f)"
+                  % (x, y, face * k, sy * k))
+        g = self.dwg.g(transform=tr)
+        g.add(self.dwg.path(d=d, fill="#1b1b1b", stroke="none"))
+        self.dwg.add(g)
 
     def _draw_voice_bracket(self, left, top, bottom, k):
         """多声部左侧括线: 粗 4px + 细 2px 两根竖线, 两端再用一条斜线把
@@ -2114,17 +2170,42 @@ class Renderer(object):
         self.line(ax, y, bx, y + sp, 1.0 * k)
 
     # ---- 连音线 -------------------------------------------------------
-    @staticmethod
-    def _tie_lift(level, marked, hi):
-        """连音线端点离音符行的高度 (参考系 px)。"""
-        return 16 + 5 * (1 if hi else 0) + 7 * (1 if marked else 0) + 7 * level
+    # 参考实现实测: 平连音线端点离音符行 16px; 高八度点 +5; 保持音 +2;
+    # 延长音 +7; 音符同时有高八度点和记号时记号又高 3px。连音线要躲开
+    # 起点/终点上最高的东西, 也要躲开跨过的音符 (跨过的高八度点让弧线
+    # 再高 3px); 嵌套一层再 +8 (长连音线只 +4)。起止音符完全相同的第二
+    # 条只错开 5px。
+    TIE_MARK_OFF = {"bc": 2.0, "yc": 7.0}
 
     @staticmethod
-    def _tie_top(level, marked, hi, multi):
+    def _tie_obstacle(n):
+        """音符上方记号/高八度点相对音符行的高度 (参考系 px)。"""
+        off = 0.0
+        for m in n.articulations:
+            off = max(off, Renderer.TIE_MARK_OFF.get(m, 0.0))
+        if n.octave > 0:
+            return off + 5.0 + (3.0 if off else 0.0)
+        return off
+
+    @staticmethod
+    def _tie_lift(level, first_obs, inside_obs):
+        """连音线端点离音符行的高度 (参考系 px)。
+
+        ``first_obs`` 是起点处 (未嵌套时还有终点) 最高的东西,
+        ``inside_obs`` 是弧线跨过的音符上方最高的东西。
+        """
+        lift = 16.0 + 8.0 * level
+        if level == 0:
+            return lift + max(first_obs, inside_obs)
+        # 嵌套时收尾处的记号不再计入, 起点照旧, 跨过的音符再高 3px
+        return lift + max(first_obs, inside_obs + 3.0 if inside_obs else 0.0)
+
+    @staticmethod
+    def _tie_top(lift, multi):
         """连音线 (含弧顶, 必要时含线上数字) 在音符行上方的高度。"""
-        h = Renderer._tie_lift(level, marked, hi) + 8      # 弧顶比端点高 8px
+        h = lift + 10                      # 弧顶/平线高度
         if multi:
-            h += 5 + SMALL * 0.78       # 连音线上标注的数字
+            h = max(h, lift + TUP_NUM_DY + TUP_NUM_H / 2.0)
         return h
 
     def _row_headroom(self, qline):
@@ -2144,56 +2225,84 @@ class Renderer(object):
                 top = max(top, OCT_HIGH + (el.octave - 1) * OCT_STEP)
             if el.cresc:                               # 渐强/渐弱线的上开口
                 top = max(top, 30 + el.cresc[1] * 7 + 5)
-        for a, b, level, multi, marked, hi, _n in self._tie_specs(
-                qline.elements):
-            top = max(top, self._tie_top(level, marked, hi, multi))
+        for _a, _b, lift, multi, _n, _lv in self._tie_specs(qline.elements):
+            top = max(top, self._tie_top(lift, multi))
         return top
 
     @staticmethod
-    def _tie_spec(a, b, level, count):
-        # 音符上方若还有记号 (延长/保持/重音/顿音) 或高八度点, 连音线要让开;
-        # 包住别的连音线时 (内层已收束) 也要更高
-        marked = any(m in ("yc", "bc", "zy", "dy")
-                     for n in (a, b) for m in n.articulations)
-        hi = a.octave > 0 or b.octave > 0
-        return (a, b, level, a.multi, marked, hi, count)
+    def _tie_spec(a, b, level, count, inside=(), dup=False):
+        # 音符上方若还有记号 (延长/保持) 或高八度点, 连音线要让开;
+        # 包住别的连音线时也要更高
+        oa = Renderer._tie_obstacle(a)
+        ob = Renderer._tie_obstacle(b)
+        oin = max([Renderer._tie_obstacle(n) for n in inside] or [0.0])
+        first = max(oa, ob) if level == 0 else oa
+        lift = Renderer._tie_lift(0 if dup else level, first, oin)
+        if dup:                            # 起止相同的第二条: 只高 5px
+            lift += 5.0
+        return (a, b, lift, a.multi, count, 0 if dup else level)
 
     def _tie_specs(self, elements):
         """按开/闭顺序把音符配成连音线。
 
-        返回 [(起点元素, 终点元素, 嵌套层数, 是否标数字, 上方有记号,
-        高八度, 连音包含的音符数)]。绘制和纵向占位计算共用这套配对逻辑。
+        返回 [(起点元素, 终点元素, 端点高度, 是否标数字, 连音包含的音符数,
+        嵌套层数)]。绘制和纵向占位计算共用这套配对逻辑。参考实现遇到右
+        括弧时收掉 *最早* 开的那条 (先开先闭), 因此 ``(1')`` 这种同时开、
+        闭的写法表示 “收掉外层、另起一条”, 而不是一条只包一个音符的连音线。
         """
         specs = []
-        stack = []                      # [序号, 起始元素, 内部已收束的连音线条数]
+        stack = []                      # [序号, 起始元素]
         notes = []
+        pairs = []
         for el in elements:
             if not isinstance(el, NoteEl):
                 continue
             start = len(notes)
             notes.append(el)
-            for _ in range(el.opens):
-                stack.append([start, el, 0])
             for _ in range(el.closes):
-                if stack:
-                    i, a, inner = stack.pop()
-                    if i == start:
-                        # 只包住一个音符的连音线 (如 (3)) 参考实现不画,
-                        # 也不算进外层连音线的嵌套层数
-                        continue
-                    specs.append(self._tie_spec(a, el, inner,
-                                                len(notes) - i))
-                    for s in stack:
-                        s[2] += 1
+                if not stack:
+                    break
+                i, a = stack.pop(0)
+                if i == start:
+                    # 只包住一个音符的连音线 (如 (3)) 参考实现不画
+                    continue
+                pairs.append((i, start, a, el))
+            for _ in range(el.opens):
+                stack.append([start, el])
         # 连音(多连音)到行末还没遇到右括弧时, 参考实现在本行最后一个音符处
         # 收口, 数字就是本行里连起来的音符数 (跨行的部分在下一行另画弧线,
         # 不再重复写数字)。
         while stack:
-            i, a, inner = stack.pop()
+            i, a = stack.pop(0)
             if a.multi and notes:
-                specs.append(self._tie_spec(a, notes[-1], inner,
-                                            len(notes) - i))
-        return specs
+                pairs.append((i, len(notes) - 1, a, notes[-1]))
+        # 嵌套层数按包含关系算 (参考实现: 包住别的连音线的那条更高),
+        # 与右括弧的收束顺序无关。
+        starts = {}
+        for i, j, _a2, _b2 in pairs:
+            starts[i] = starts.get(i, 0) + 1
+        for i, j, a, b in pairs:
+            inner = sum(1 for i2, j2, _a2, _b2 in pairs
+                        if (i2, j2) != (i, j) and i <= i2 and j2 <= j)
+            # 同一个音符上连开三层时参考实现只画两层
+            if inner >= 2 and starts.get(i, 0) > 2:
+                continue
+            specs.append(self._tie_spec(a, b, inner, j - i + 1,
+                                        notes[i + 1:j]))
+        # 起止音符完全相同的两条连音线: 参考实现只错开 5px 画成两条,
+        # 第三条开始不再画。
+        seen = {}
+        out = []
+        for spec in specs:
+            key = (id(spec[0]), id(spec[1]))
+            n = seen.get(key, 0)
+            seen[key] = n + 1
+            if n >= 2:
+                continue
+            if n == 1:
+                spec = self._tie_spec(spec[0], spec[1], 0, spec[4], dup=True)
+            out.append(spec)
+        return out
 
     @staticmethod
     def _tie_scan(elements, depth=0):
@@ -2239,62 +2348,113 @@ class Renderer(object):
                 prev_q, prev_depth = q, depth
         return info
 
-    def _draw_tie_half(self, x, y, k, start, right=None):
-        """跨行连音线的半段: start=True 画行首那半 (从弧顶落到音符),
-        否则画行末那半 (从音符上扬到弧顶, 再拉一条平线到行尾)。"""
-        if start:
-            ax, ay = x - TIE_HALF_W * k, y - TIE_HALF_TOP * k
+    def _hook(self, x, y, k, left=True):
+        """连音线两端的小钩 (参考实现 lianyinxian_zuo / lianyinxian_you)。
+
+        字形从 (x+0.75, y+0.75) 出发, 向左 (或右) 下方落到离起点 11.5px、
+        低 8.9px 处, 正好落在音符中心上方。
+        """
+        if left:
             d = ("M %.2f %.2f C %.2f %.2f %.2f %.2f %.2f %.2f"
-                 % (ax, ay, ax, ay, ax + 7.6 * k, ay + 0.6 * k,
-                    x, y - 16 * k))
+                 % (x + 0.75 * k, y + 0.75 * k,
+                    x + 0.75 * k, y + 0.75 * k,
+                    x - 7.64 * k, y + 1.32 * k,
+                    x - 11.47 * k, y + 9.63 * k))
         else:
-            ax, ay = x + TIE_HALF_W * k, y - TIE_HALF_TOP * k
             d = ("M %.2f %.2f C %.2f %.2f %.2f %.2f %.2f %.2f"
-                 % (ax, ay, ax, ay, ax - 7.6 * k, ay + 0.6 * k,
-                    x, y - 16 * k))
-            if right is not None and right > ax:
-                self.line(ax, ay, right, ay, 1.2 * k)
+                 % (x + 0.75 * k, y + 0.75 * k,
+                    x + 0.75 * k, y + 0.75 * k,
+                    x + 8.39 * k, y + 1.32 * k,
+                    x + 11.87 * k, y + 9.63 * k))
         self.dwg.add(self.dwg.path(d=d, fill="none", stroke="#1b1b1b",
-                                   stroke_width="%.2fpx" % (1.2 * k)))
+                                   stroke_width="%.2fpx" % (1.2 * k),
+                                   stroke_linecap="round"))
+
+    @staticmethod
+    def _tie_open_start(elements):
+        """返回行末仍未收口的连音线的起始音符 (没有则 None)。"""
+        stack = []
+        for el in elements:
+            if not isinstance(el, NoteEl):
+                continue
+            for _ in range(el.closes):
+                if stack:
+                    stack.pop(0)
+            for _ in range(el.opens):
+                stack.append(el)
+        return stack[0] if stack else None
 
     def _draw_ties(self, elements, idpos, k, carry_in=0, carry_out=0,
                    right=None):
-        for a, b, level, multi, marked, hi, n in self._tie_specs(elements):
+        for a, b, lift, multi, n, level in self._tie_specs(elements):
             if id(a) in idpos and id(b) in idpos:
-                self._tie(idpos[id(a)], idpos[id(b)], level,
-                          multi, k, marked, hi, n)
+                self._tie(idpos[id(a)], idpos[id(b)], lift,
+                          multi, k, n, level)
         notes = [el for el in elements
                  if isinstance(el, NoteEl) and id(el) in idpos]
         if not notes:
             return
-        for _ in range(carry_in):
-            x, y = idpos[id(notes[0])]
-            self._draw_tie_half(x, y, k, True)
-        for _ in range(carry_out):
-            x, y = idpos[id(notes[-1])]
-            self._draw_tie_half(x, y, k, False, right)
+        if carry_in:
+            # 行首: 只在左页边 (音符区左侧 12px) 画一个右钩, 钩尖正好落在
+            # 第一个音符上方; 参考实现不画平线。
+            el = notes[0]
+            x, y = idpos[id(el)]
+            lift = 16.0 + self._tie_obstacle(el)
+            self._hook(MUSIC_L - 12 * k, y - (lift + HOOK_RISE) * k, k,
+                       left=False)
+        if carry_out:
+            # 行末仍未收口的连音线: 参考实现把上扬钩画在它 *起头* 的音符
+            # 处 (通常是本行最后一个音符, 但若最后一个音符只是收掉别的
+            # 连音线, 钩子会落在更靠左的起点上)。
+            el = self._tie_open_start(elements) or notes[-1]
+            x, y = idpos.get(id(el), idpos[id(notes[-1])])
+            lift = 16.0 + self._tie_obstacle(el)
+            ay = y - (lift + HOOK_RISE) * k
+            self._hook(x + HOOK_ANCHOR * k, ay, k, left=True)
+            if right is not None and right > x + HOOK_ANCHOR * k:
+                self.line(x + (HOOK_ANCHOR + 0.8) * k, ay + 0.75 * k, right,
+                          ay + 0.75 * k, 1.2 * k)
 
-    def _tie(self, a, b, level, multi, k, marked=False, hi=False, count=2):
+    def _tie(self, a, b, lift, multi, k, count=2, level=0):
         x1, y1 = a
         x2, y2 = b
-        # 端点高度基准 16px (参考实现实测 16/24): 高八度点 +5, 上方有记号
-        # +7, 每嵌套一层 +7; 弧顶再比端点高 8px。
-        lift = self._tie_lift(level, marked, hi)
         y = min(y1, y2) - lift * k
         mid = (x1 + x2) / 2.0
-        h = 16 * k
-        d = "M %.2f %.2f Q %.2f %.2f %.2f %.2f" % (x1, y, mid, y - h, x2, y)
-        self.dwg.add(self.dwg.path(d=d, fill="none", stroke="#1b1b1b",
-                                   stroke_width="%.2fpx" % (1.2 * k)))
+        span = abs(x2 - x1)
+        if multi or span <= TIE_FLAT_MIN * k:
+            # 短连音线: 一条中间平、两端下垂的细弧。参考实现用一条 0.5px
+            # 的路径来回画两遍 (回程低 1px), 看起来像一条略粗的扁弧。
+            x1 += TIE_INSET * k
+            x2 -= TIE_INSET * k
+            span = abs(x2 - x1)
+            d = 0.3 * span - 0.4 * k
+            sgn = 1.0 if x2 > x1 else -1.0
+            c1 = x1 + sgn * d
+            c2 = x2 - sgn * d
+            top = TIE_CTRL * k
+            path = ("M %.2f %.2f C %.2f %.2f %.2f %.2f %.2f %.2f "
+                    "M %.2f %.2f C %.2f %.2f %.2f %.2f %.2f %.2f") % (
+                        x1, y, c1, y - top, c2, y - top, x2, y,
+                        x2, y, c2, y - top + k, c1, y - top + k, x1, y)
+            self.dwg.add(self.dwg.path(d=path, fill="none", stroke="#1b1b1b",
+                                       stroke_width="%.2fpx" % (0.5 * k)))
+        else:
+            # 长连音线: 一条平线加两端小钩 (参考实现 lianyinxian_* 字形)。
+            # 平线比弧线低, 嵌套一层只抬高 4px。
+            ay = y + 4.0 * level * k - HOOK_RISE * k
+            self._hook(x1 + HOOK_ANCHOR * k, ay, k, left=True)
+            self._hook(x2 - HOOK_ANCHOR * k, ay, k, left=False)
+            self.line(x1 + (HOOK_ANCHOR + 0.8) * k, ay + 0.75 * k,
+                      x2 - (HOOK_ANCHOR - 1.0) * k, ay + 0.75 * k, 1.2 * k)
         if multi:
-            # 连音数字: 写在本行音符数上, 位于弧顶 (参考实现用一个带白底的
-            # 小号数字把弧线遮出一个缺口), 字号比八度点略大的小数字。
-            ny = y - 7 * k
-            half = 5 * k
-            self.dwg.add(self.dwg.rect(insert=(mid - half, ny - half),
-                                       size=(2 * half, 2 * half),
-                                       fill="#ffffff"))
-            self.text(str(count), mid, ny + 3.5 * k, 10 * k,
+            # 连音数字: 写在本行音符数上, 位于弧线中点上方 (参考实现用一个
+            # 带白底的小号数字把弧线遮出一个缺口)。
+            ny = y - TUP_NUM_DY * k
+            self.dwg.add(self.dwg.rect(
+                insert=(mid - TUP_NUM_W * k / 2.0,
+                        ny - TUP_NUM_H * k / 2.0),
+                size=(TUP_NUM_W * k, TUP_NUM_H * k), fill="#ffffff"))
+            self.text(str(count), mid, ny + 4.0 * k, 11 * k,
                       family=FONT_NOTE, weight="bold")
 
     # ---- 跳房子 -------------------------------------------------------
