@@ -74,6 +74,7 @@ MARGIN = 80                         # 页边距 (文字用)
 MUSIC_L = 83                        # 单声部音乐左边界
 MUSIC_L_MV = 103                    # 多声部音乐左边界 (留出声部括弧)
 MUSIC_R = 923                       # 音乐右边界
+LABEL_RIGHT = 106                   # 声部名称右端 (写在左边距里, 右对齐)
 
 TITLE_Y = 140                       # 主标题基线
 SUB_Y = 183                         # 副标题基线
@@ -954,7 +955,8 @@ def coef(a, b, onset_a=None, onset_b=None):
     if isinstance(a, BarEl):
         return UNIT_BAR + ACC_UNIT * bool(getattr(b, "acc", ""))
     if isinstance(b, BarEl):
-        return UNIT_BAR + ACC_UNIT * bool(getattr(a, "acc", ""))
+        return (UNIT_BAR + FUDIAN_UNIT * getattr(a, "dots", 0)
+                + ACC_UNIT * bool(getattr(a, "acc", "")))
     # 附点本身占一点宽度: 后面的音符要让开, 否则附点会压到下一个数字上
     # (同一拍里的附点八分 + 十六分本来只有 1 个单位宽, 附点必然重叠)。
     extra = FUDIAN_UNIT if getattr(a, "dots", 0) else 0.0
@@ -1137,6 +1139,8 @@ class Renderer(object):
             onsets.append(t)
             t += duration(el)
         tail = UNIT_END if last else UNIT_BAR
+        if notes:
+            tail += FUDIAN_UNIT * getattr(notes[-1], "dots", 0)
         if notes and getattr(notes[-1], "acc", ""):
             tail += ACC_UNIT
         coefs = []
@@ -1273,11 +1277,8 @@ class Renderer(object):
                 house_y = max(house_y, self._last_bottom + HOUSE_CLAMP * k)
 
         left = (MUSIC_L_MV if nv > 1 else MUSIC_L) * k
-        # 声部名称占左侧空间: 参考实现把整行 (含声部括弧) 右移名称宽度
-        if nv > 1:
-            for q in qlines:
-                if q.name:
-                    left += text_width(q.name, LYRIC_SIZE) * k
+        # 声部名称右对齐写在左页边距里 (参考实现实测: x=106, 右对齐), 音乐
+        # 本身不因名称而右移。
         right = MUSIC_R * k
         # 行首若是隐藏休止符 8, 参考实现会整体右移一段; 行首带伴奏左括弧
         # (&zkh) 时也稍作右移, 给括弧留出位置。
@@ -1597,7 +1598,7 @@ class Renderer(object):
             vtop = nb if vtop is None else min(vtop, nb)
             vbot = nb if vbot is None else max(vbot, nb)
             if nv > 1 and q.name:
-                self.text(q.name, left - 35 * k, nb + 6 * k,
+                self.text(q.name, LABEL_RIGHT * k, nb + 6 * k,
                           LYRIC_SIZE * k, anchor="end", family=FONT_SANS)
             sl = []
             for m in range(nmeas):
