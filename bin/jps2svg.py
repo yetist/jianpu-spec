@@ -1753,14 +1753,18 @@ class Renderer(object):
                 bx, bar = barx[vi][m]
                 if bar is None:
                     continue
-                # 区间收尾的小节线画在主声部的基线上 ({dsb} 结束之后主声部
-                # 回到基线, 参考实现的这条小节线也在基线上, 不在下移那行)。
-                dy = 0.0 if span_end(vi, m) else span_dy(vi, m)
-                self._draw_bar(bar, bx, nb + dy)
-                # 临时声部区间内部的小节线上下两行都要画; 区间收尾的小节线
-                # 只画在主声部 (参考实现里临时声部那一行是空白的)。
-                if span_any(vi, m) and not span_end(vi, m):
+                end_bar = span_end(vi, m)
+                if end_bar and m + 1 < nmeas:
+                    # 区间在本行中间收尾: 后面主声部回到基线, 参考实现的这条
+                    # 小节线也画在基线上 (不在下移的那一行)。
+                    self._draw_bar(bar, bx, nb)
+                elif span_any(vi, m):
+                    # 区间内部 (以及正好在行末收尾) 的小节线: 临时声部那一行
+                    # 和主声部那一行都要画。
+                    self._draw_bar(bar, bx, nb + span_dy(vi, m))
                     self._draw_bar(bar, bx, nb - temp_up(vi, m))
+                else:
+                    self._draw_bar(bar, bx, nb + span_dy(vi, m))
             slots.append(sl)
             self._draw_hairpins(q, idpos, nb)
 
