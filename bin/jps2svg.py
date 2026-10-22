@@ -1753,7 +1753,10 @@ class Renderer(object):
                 bx, bar = barx[vi][m]
                 if bar is None:
                     continue
-                self._draw_bar(bar, bx, nb + span_dy(vi, m))
+                # 区间收尾的小节线画在主声部的基线上 ({dsb} 结束之后主声部
+                # 回到基线, 参考实现的这条小节线也在基线上, 不在下移那行)。
+                dy = 0.0 if span_end(vi, m) else span_dy(vi, m)
+                self._draw_bar(bar, bx, nb + dy)
                 # 临时声部区间内部的小节线上下两行都要画; 区间收尾的小节线
                 # 只画在主声部 (参考实现里临时声部那一行是空白的)。
                 if span_any(vi, m) and not span_end(vi, m):
