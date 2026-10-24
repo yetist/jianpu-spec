@@ -1,0 +1,10 @@
+% GB/T 46845—2025 对照新增语法示例
+% 演示：重升/重降、虚小节线、八度号、小节反复、小节序号、表情/表演记号、移调乐器声明
+@version 2.0
+@title "国标新增符号示例"
+@key 1=C
+@time 4/4
+@voice 1 name="旋律" transpose=8
+@voice 2 name="伴奏" role=accompaniment bracket=brace
+V1: | 1## 2bb 3n 4\beatbar | 5\phrase\beatbar 6 7 1'\phrase(end) |\ottava(up) 2' 1' 7 6 |\ottava(end) 5 4 3 2 |\repeatprev |\measure-number(5) 1\expr("dolce") 2\finger(1) 3\bow(up) 4\string(2) |
+V2: | 5, - - - | 6, - - - | 7, - - - | 1 - - - | 2 - - - | 3 - - - |

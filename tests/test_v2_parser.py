@@ -31,7 +31,7 @@ def errors(doc: jps2svg2.Document) -> list[jps2svg2.Diagnostic]:
 
 class V2ParserAcceptanceTest(unittest.TestCase):
     def test_examples_parse_without_errors(self) -> None:
-        for name in ("01-排排坐.jps", "02-综合示例.jps"):
+        for name in ("01-排排坐.jps", "02-综合示例.jps", "03-国标符号示例.jps"):
             path = ROOT / "v2" / "examples" / name
             parser = jps2svg2.Parser(str(path), path.read_text(encoding="utf-8"))
             doc = parser.parse()
@@ -134,6 +134,46 @@ class V2ParserAcceptanceTest(unittest.TestCase):
             len(doc.systems[0].voices[0].measures), 2)
         self.assertEqual(
             len(doc.systems[0].voices[1].measures), 3)
+
+    def test_gb_t_46845_alignment_additions(self) -> None:
+        doc = parse_text(
+            "@version 2.0\n"
+            "@key 1=C\n"
+            "@time 4/4\n"
+            "@voice 1 name=\"旋律\" transpose=8\n"
+            "V1: | 1## 2bb 3n 4 | 5\\phrase\\beatbar 6 7 1'\\phrase(end) |"
+            "\\ottava(up) 2' 1' 7 6 |\\ottava(end) 5 4 3 2 |"
+            "\\repeatprev |\\measure-number(5) 1 2 3 4"
+            "\\expr(\"dolce\")\\finger(1) |\n")
+        self.assertEqual(errors(doc), [])
+        self.assertEqual(doc.voices[1].transpose, 8)
+        self.assertEqual(len(doc.octaves), 1)
+        self.assertEqual(len(doc.phrases), 1)
+
+        voice = doc.systems[0].voices[0]
+        accidentals = [
+            ev.accidental
+            for m in voice.measures for ev in m.events
+            if isinstance(ev, jps2svg2.NoteEvent) and ev.accidental
+        ]
+        self.assertIn("##", accidentals)
+        self.assertIn("bb", accidentals)
+        self.assertTrue(any(
+            isinstance(ev, jps2svg2.BeatBarEvent)
+            for m in voice.measures for ev in m.events))
+        self.assertEqual(voice.measures[4].repeat_previous, 1)
+        all_marks = {
+            mark.name for m in voice.measures for ev in m.events
+            if isinstance(ev, jps2svg2.NoteEvent) for mark in ev.marks
+        }
+        self.assertIn("expr", all_marks)
+        self.assertIn("finger", all_marks)
+        bar_commands = {
+            cmd.name for m in voice.measures
+            for bar in (m.start_bar, m.end_bar) if bar is not None
+            for cmd in bar.commands
+        }
+        self.assertIn("measure-number", bar_commands)
 
     def test_x_tie_is_allowed(self) -> None:
         doc = parse_text(

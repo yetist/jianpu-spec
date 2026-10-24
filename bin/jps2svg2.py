@@ -117,6 +117,7 @@ class VoiceDecl:
     role: str | None = None
     bracket: str = "auto"
     lyrics: bool = True
+    transpose: int = 0          # 同调移调乐器：+8 高八度记谱，-8 低八度记谱
     pos: SourcePos | None = None
 
 
@@ -255,6 +256,40 @@ class CrescendoEndEvent:
 
 
 @dataclass
+class BeatBarEvent:
+    """虚小节线：只用于节拍细分显示，不构成真实小节边界。"""
+    pos: SourcePos | None = None
+
+
+@dataclass
+class OctaveStartEvent:
+    direction: str                # up / down（对应 8va / 8vb）
+    pos: SourcePos | None = None
+
+
+@dataclass
+class OctaveEndEvent:
+    pos: SourcePos | None = None
+
+
+@dataclass
+class PhraseStartEvent:
+    pos: SourcePos | None = None
+
+
+@dataclass
+class PhraseEndEvent:
+    pos: SourcePos | None = None
+
+
+@dataclass
+class RepeatPreviousEvent:
+    """小节反复号：重复前 1 或 2 个完整小节。"""
+    count: int = 1
+    pos: SourcePos | None = None
+
+
+@dataclass
 class VoiceBlock:
     voice_id: int
     options: dict[str, Any]
@@ -274,6 +309,7 @@ class Measure:
     expected_duration: Fraction | None = None
     free: bool = False
     pickup: bool = False
+    repeat_previous: int = 0      # 1 或 2：小节反复号
     pos: SourcePos | None = None
 
 
@@ -330,6 +366,21 @@ class Crescendo:
 
 
 @dataclass
+class OctaveSpan:
+    voice_id: int
+    direction: str                # up / down
+    start: SourcePos
+    end: SourcePos | None = None
+
+
+@dataclass
+class PhraseSpan:
+    voice_id: int
+    start: SourcePos
+    end: SourcePos | None = None
+
+
+@dataclass
 class Document:
     path: str
     version: Version | None = None
@@ -346,6 +397,8 @@ class Document:
     systems: list[System] = field(default_factory=list)
     slurs: list[Slur] = field(default_factory=list)
     crescendos: list[Crescendo] = field(default_factory=list)
+    octaves: list[OctaveSpan] = field(default_factory=list)
+    phrases: list[PhraseSpan] = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
 
 
@@ -835,9 +888,15 @@ class BodyParser:
                 if accidental is not None:
                     self.error("一个音符最多一个变化音", self.pos(),
                                "accidental", "6.3")
+                    self.i += 1
                 else:
-                    accidental = ch
-                self.i += 1
+                    # v2 用 ## / bb 表示重升/重降，避免与节奏音符 x 冲突。
+                    if ch in "#b" and self.peek(1) == ch:
+                        accidental = ch + ch
+                        self.i += 2
+                    else:
+                        accidental = ch
+                        self.i += 1
             elif ch == ".":
                 dots += 1
                 self.i += 1
@@ -1253,10 +1312,58 @@ class BodyParser:
                                    "break-position", "8.2")
                     continue
 
+                if name in ("beatbar", "ottava", "phrase", "repeatprev") and block is not None:
+                    self.error("\\%s 不接受 {…} 块" % name, cmd.pos,
+                               "command-block", "6.8")
+                    continue
+
+                if name == "beatbar":
+                    # 虚小节线：只画节拍细分虚线，不改小节结构。
+                    append(BeatBarEvent(cmd.pos))
+                    continue
+
+                if name == "ottava":
+                    direction = _arg_text(cmd.arg(0))
+                    if direction in ("up", "down"):
+                        append(OctaveStartEvent(direction, cmd.pos))
+                    elif direction == "end":
+                        append(OctaveEndEvent(cmd.pos))
+                    else:
+                        self.error("\\ottava 需要 up、down 或 end", cmd.pos,
+                                   "octave", "6.1")
+                    continue
+
+                if name == "phrase":
+                    action = _arg_text(cmd.arg(0))
+                    if action in (None, "", "start"):
+                        append(PhraseStartEvent(cmd.pos))
+                    elif action == "end":
+                        append(PhraseEndEvent(cmd.pos))
+                    else:
+                        self.error("\\phrase 只接受 start 或 end", cmd.pos,
+                                   "phrase", "7.10")
+                    continue
+
+                if name == "repeatprev":
+                    count = 1
+                    if cmd.args:
+                        a = cmd.arg(0)
+                        if isinstance(a.value, int):
+                            count = a.value
+                        else:
+                            self.error("\\repeatprev(n) 的 n 必须是 1 或 2",
+                                       cmd.pos, "measure-repeat", "7.2")
+                    if count not in (1, 2):
+                        self.error("\\repeatprev 只能重复前 1 或 2 个小节",
+                                   cmd.pos, "measure-repeat", "7.2")
+                        count = 1
+                    append(RepeatPreviousEvent(count, cmd.pos))
+                    continue
+
                 if name in ("time", "key", "beats", "tempo", "partial",
                             "free", "house", "repeat", "segno", "coda",
                             "tocoda", "fine", "dc", "ds", "mark",
-                            "hidebar", "phantombar"):
+                            "measure-number", "hidebar", "phantombar"):
                     if not isinstance(last_item, Bar):
                         self.error("\\%s 必须附着在小节线上" % name, cmd.pos,
                                    "bar-command", "7.5")
@@ -1272,6 +1379,13 @@ class BodyParser:
                         else:
                             self.error("\\repeat(n) 需要正整数", cmd.pos,
                                        "repeat", "7.2")
+                    elif name == "measure-number":
+                        a = cmd.arg(0)
+                        if a and isinstance(a.value, int) and a.value > 0:
+                            last_item.commands.append(cmd)
+                        else:
+                            self.error("\\measure-number(n) 需要正整数",
+                                       cmd.pos, "measure-number", "5.9")
                     else:
                         last_item.commands.append(cmd)
                     continue
@@ -1324,7 +1438,9 @@ class BodyParser:
                             "sf", "sfz", "fp", "sfp",
                             "stacc", "ten", "acc", "marc", "fermata",
                             "trill", "mordent", "turn", "gliss", "breath",
-                            "caesura", "arpeggio", "sym"):
+                            "caesura", "arpeggio", "trem", "tremolo",
+                            "expr", "finger", "bow", "string", "instrument",
+                            "pitched", "sym"):
                     if name == "sym":
                         sym_name = _arg_text(cmd.arg(0))
                         if sym_name and sym_name not in self.parser.doc.symbols:
@@ -1524,8 +1640,9 @@ LAYOUT_KEYS = {
 STANDARD_MARKS = {
     "pp", "p", "mp", "mf", "f", "ff", "fff", "sf", "sfz", "fp", "sfp",
     "stacc", "ten", "acc", "marc", "fermata", "trill", "mordent",
-    "turn", "gliss", "breath", "caesura", "arpeggio", "sym", "text",
-    "chord",
+    "turn", "gliss", "breath", "caesura", "arpeggio", "trem", "tremolo",
+    "expr", "finger", "bow", "string", "instrument", "pitched",
+    "sym", "text", "chord",
 }
 
 
@@ -1842,7 +1959,7 @@ class Parser:
         rest = m.group(2).strip()
         opts = self.parse_option_string(rest, pos)
         for opt in opts:
-            if opt not in ("name", "role", "bracket", "lyrics"):
+            if opt not in ("name", "role", "bracket", "lyrics", "transpose"):
                 self.warning("未知的 @voice 选项 %s" % opt, pos,
                              "voice-option", "4.6")
         role = opts.get("role")
@@ -1860,8 +1977,20 @@ class Parser:
                            "voice-lyrics", "4.6")
             else:
                 lyrics = opts["lyrics"] == "yes"
+        transpose = 0
+        if "transpose" in opts:
+            try:
+                transpose = int(opts["transpose"])
+            except ValueError:
+                self.error("声部 transpose 必须是 +8、-8 或 0", pos,
+                           "voice-transpose", "4.6")
+            if transpose not in (-8, 0, 8):
+                self.error("声部 transpose 必须是 +8、-8 或 0", pos,
+                           "voice-transpose", "4.6")
+                transpose = 0
         self.doc.voices[vid] = VoiceDecl(
-            vid, opts.get("name"), role, bracket, lyrics, pos)
+            vid, opts.get("name"), role, bracket, lyrics,
+            transpose=transpose, pos=pos)
 
     def parse_symbol_decl(self, value: str, pos: SourcePos) -> None:
         m = re.match(r"([a-z][a-z0-9-]*)\s*(.*)$", value.strip(), re.S)
@@ -2145,11 +2274,15 @@ class Parser:
         def is_zero_width(ev: Any) -> bool:
             return isinstance(ev, (GroupStartEvent, GroupEndEvent,
                                    SlurStartEvent, SlurEndEvent,
-                                   CrescendoStartEvent, CrescendoEndEvent))
+                                   CrescendoStartEvent, CrescendoEndEvent,
+                                   BeatBarEvent, OctaveStartEvent,
+                                   OctaveEndEvent, PhraseStartEvent,
+                                   PhraseEndEvent))
 
         def is_end_marker(ev: Any) -> bool:
             return isinstance(ev, (GroupEndEvent, SlurEndEvent,
-                                   CrescendoEndEvent))
+                                   CrescendoEndEvent, OctaveEndEvent,
+                                   PhraseEndEvent))
 
         def has_music(events: list[Any]) -> bool:
             return any(not is_zero_width(e) for e in events)
@@ -2169,6 +2302,8 @@ class Parser:
                 if isinstance(ev, NoteEvent) and ev.measure_rest:
                     m.measure_rest_count = max(1, ev.measure_rest_count)
                     break
+                if isinstance(ev, RepeatPreviousEvent):
+                    m.repeat_previous = ev.count
             measures.append(m)
             current_start = None
             current_events = []
@@ -2532,6 +2667,25 @@ class Parser:
                        "empty-measure", "7.1")
             m.duration = Fraction(0)
             return
+        repeat_events = [e for e in m.events
+                         if isinstance(e, RepeatPreviousEvent)]
+        if repeat_events:
+            other = [e for e in m.events if not isinstance(e, (
+                RepeatPreviousEvent, GroupStartEvent, GroupEndEvent,
+                SlurStartEvent, SlurEndEvent, CrescendoStartEvent,
+                CrescendoEndEvent, BeatBarEvent, OctaveStartEvent,
+                OctaveEndEvent, PhraseStartEvent, PhraseEndEvent))]
+            if other:
+                self.error("\\repeatprev 必须独占一个小节",
+                           repeat_events[0].pos or m.pos or SourcePos(1, 1),
+                           "measure-repeat", "7.2")
+            if len(repeat_events) > 1:
+                self.error("一个小节只能有一个 \\repeatprev",
+                           repeat_events[1].pos or m.pos or SourcePos(1, 1),
+                           "measure-repeat", "7.2")
+            m.repeat_previous = repeat_events[0].count
+            m.duration = m.expected_duration or Fraction(0)
+            return
         measure_rests = [
             e for e in m.events
             if isinstance(e, NoteEvent) and e.measure_rest
@@ -2539,7 +2693,9 @@ class Parser:
         if measure_rests:
             other = [e for e in m.events if not isinstance(e, (
                 GroupStartEvent, GroupEndEvent, SlurStartEvent, SlurEndEvent,
-                CrescendoStartEvent, CrescendoEndEvent))]
+                CrescendoStartEvent, CrescendoEndEvent, BeatBarEvent,
+                OctaveStartEvent, OctaveEndEvent, PhraseStartEvent,
+                PhraseEndEvent))]
             if len(other) != 1:
                 self.error("0\\measure 必须独占一个小节",
                            measure_rests[0].pos or m.pos or SourcePos(1, 1),
@@ -2715,6 +2871,8 @@ class Parser:
         for vid, events in timelines.items():
             slur_stack: list[SlurStartEvent] = []
             cresc_stack: list[CrescendoStartEvent] = []
+            octave_stack: list[OctaveStartEvent] = []
+            phrase_stack: list[PhraseStartEvent] = []
             for ev in events:
                 if isinstance(ev, SlurStartEvent):
                     slur_stack.append(ev)
@@ -2739,6 +2897,29 @@ class Parser:
                         self.doc.crescendos.append(Crescendo(
                             vid, start_ev.direction,
                             start_ev.pos or SourcePos(1, 1), ev.pos))
+                elif isinstance(ev, OctaveStartEvent):
+                    octave_stack.append(ev)
+                elif isinstance(ev, OctaveEndEvent):
+                    if not octave_stack:
+                        self.error("八度号结束 \\ottava(end) 没有起点",
+                                   ev.pos or SourcePos(1, 1),
+                                   "octave", "6.1")
+                    else:
+                        start_ev = octave_stack.pop()
+                        self.doc.octaves.append(OctaveSpan(
+                            vid, start_ev.direction,
+                            start_ev.pos or SourcePos(1, 1), ev.pos))
+                elif isinstance(ev, PhraseStartEvent):
+                    phrase_stack.append(ev)
+                elif isinstance(ev, PhraseEndEvent):
+                    if not phrase_stack:
+                        self.error("分句线结束 \\phrase(end) 没有起点",
+                                   ev.pos or SourcePos(1, 1),
+                                   "phrase", "7.10")
+                    else:
+                        start_ev = phrase_stack.pop()
+                        self.doc.phrases.append(PhraseSpan(
+                            vid, start_ev.pos or SourcePos(1, 1), ev.pos))
             if slur_stack:
                 self.error("连音线 ( 没有闭合",
                            slur_stack[-1].pos or SourcePos(1, 1),
@@ -2747,6 +2928,14 @@ class Parser:
                 self.warning("渐强/渐弱没有 \\! 结束",
                              cresc_stack[-1].pos or SourcePos(1, 1),
                              "crescendo", "6.8")
+            if octave_stack:
+                self.error("八度号没有 \\ottava(end) 结束",
+                           octave_stack[-1].pos or SourcePos(1, 1),
+                           "octave", "6.1")
+            if phrase_stack:
+                self.error("分句线没有 \\phrase(end) 结束",
+                           phrase_stack[-1].pos or SourcePos(1, 1),
+                           "phrase", "7.10")
 
     # -- 延音线 -------------------------------------------------------------
     def iter_notes(self, events: Iterable[Any]) -> Iterator[NoteEvent]:
@@ -2801,7 +2990,7 @@ class Parser:
                         eff: str | None
                         if note.accidental == "n":
                             eff = None
-                        elif note.accidental in ("#", "b"):
+                        elif note.accidental in ("#", "b", "##", "bb"):
                             eff = note.accidental
                         elif self.doc.accidentals == "measure":
                             eff = state.get((int(note.pitch), note.octave))

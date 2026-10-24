@@ -49,6 +49,10 @@ event           = bar
                 | grace
                 | beam-group
                 | voice-block
+                | beat-bar
+                | octave-span
+                | phrase-span
+                | measure-repeat
                 | command ;
 
 (* 小节线 *)
@@ -59,7 +63,7 @@ ending-label    = digits, { ",", digits }, "." ;
 note            = pitch, { octave | accidental | dot | slash } ;
 pitch           = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "x" ;
 octave          = "'" | "," ;
-accidental      = "#" | "b" | "n" ;
+accidental      = "##" | "bb" | "#" | "b" | "n" ;
 dot             = "." ;
 slash           = "/" ;
 
@@ -80,6 +84,10 @@ grace-note      = pitch, { octave | accidental | dot | slash } ;
 
 (* 减时线连接覆盖 *)
 beam-group      = "\beam", "{", body, "}" ;
+beat-bar        = "\beatbar" ;
+octave-span     = "\ottava", "(", ( "up" | "down" | "end" ), ")" ;
+phrase-span     = "\phrase", [ "(", ( "start" | "end" ), ")" ] ;
+measure-repeat  = "\repeatprev", [ "(", ( "1" | "2" ), ")" ] ;
 
 (* 临时声部块 *)
 voice-block     = "\voice", "(", args, ")", "{", body, "}" ;
