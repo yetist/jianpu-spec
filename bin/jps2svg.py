@@ -71,6 +71,7 @@ FONT_NOTE = ("'Liberation Serif','Times New Roman','Nimbus Roman',"
              "'FreeSerif',serif")
 
 MARGIN = 80                         # 页边距 (文字用)
+PAGE_TOP = 130                      # 续页第一行声部基线 (参考实现实测)
 MUSIC_L = 83                        # 单声部音乐左边界
 MUSIC_L_MV = 103                    # 多声部音乐左边界 (留出声部括弧)
 MUSIC_R = 923                       # 音乐右边界
@@ -87,7 +88,7 @@ FIRST_GAP = 40                      # 描述头底部 -> 首行第一声部基�
 DYN_PAD = 12                        # 首行上方若有力度记号再让出的空间
 HOUSE_PAD = 30                      # 跳房子横线距音符行的高度 (参考实现实测)
 HOUSE_STEP = 10                     # "[+" 每多一个 "+", 横线再抬高这么多
-HOUSE_CLEAR = 16                    # 横线与音符上方内容(连音线等)的最小间隙
+HOUSE_CLEAR = 14                    # 横线与音符上方内容(连音线等)的最小间隙
 HOUSE_RESERVE = 12                  # 有跳房子时行首额外让出的高度
 HOUSE_CLAMP = 25                    # 横线距上一行内容底部的最小距离
 HOUSE_TICK = 10                     # 跳房子两端竖线下垂高度
@@ -1141,7 +1142,9 @@ class Renderer(object):
         self._outfile = outfile
         self._new_page()
         bottom = self._render_header()
-        self._page_top = MARGIN * self.k
+        # 参考实现续页的第一行固定落在 y=130 (实测 012 第 2-4 页、014 第 2 页),
+        # 与首页的标题区无关, 也不是页边距 MARGIN。
+        self._page_top = PAGE_TOP * self.k
         self._first_base = bottom + FIRST_GAP * self.k
         self.y = self._first_base
         self._last_bottom = 0.0
@@ -1358,9 +1361,20 @@ class Renderer(object):
             ly_lead = self.style_lead
         else:
             ly_lead = LYRIC_LINE
+
+        # 参考实现: 多声部谱里, 声部行上方有渐强/渐弱线 (< >) 时, 该行前多让出
+        # 12px (012 逐行实测: 106 -> 118, 78 -> 90)。单声部谱不加 (007 实测
+        # 所有行距都是 106), 力度记号文字本身也不触发 (012 第 3 行只有 &mp)。
+        def has_hairpin(c):
+            q = c[0]
+            return (q is not None and nv > 1
+                    and any(isinstance(el, NoteEl) and el.cresc
+                            for el in q.elements))
+
+        dyn_extra = [DYN_PAD if has_hairpin(c) else 0.0 for c in clusters]
         sys_h = sum((self.vgap if c[0] is not None else 0.0)
                     + (ly_lead + LYRIC_LINE * (len(c[1]) - 1) if c[1] else 0.0)
-                    for c in clusters) * k
+                    for c in clusters) * k + sum(dyn_extra) * k
         # 版心底部: 用于判断本行是否还能排进当前页。歌词行只需到最后一行的
         # 字身底部, 不必按整行高度(簇尾的 LYRIC_LINE)计算。
         cur = self.y
@@ -1376,8 +1390,14 @@ class Renderer(object):
                 cur += (ly_lead + LYRIC_LINE * (len(clys) - 1)) * k
             sys_bottom = max(sys_bottom, b - self.y)
 
+        # 力度记号/渐强线只在全谱第一行上方让出 DYN_PAD: 007 首页第一行带
+        # &mp 时参考实现比无记号时低 12px。续页第一行固定落在一页顶部,
+        # 不再让位 (012 第 2-4 页实测), 行内的渐强线见 dyn_extra。
+        first_sys = abs(self.y - self._first_base) < 0.1
+        first_row_dyn = bool(clusters and dyn_extra[0])
+        top_dyn = first_sys and (has_dyn or first_row_dyn)
         pad = (HOUSE_RESERVE * k) if has_house \
-            else ((DYN_PAD * k) if (has_dyn and at_top) else 0.0)
+            else ((DYN_PAD * k) if top_dyn else 0.0)
         if has_house and not at_top:
             # 有跳房子: 内容整体下移, 让横线正好落在上一行内容底部之下
             # HOUSE_CLAMP 处, 空出 house_off 的高度给横线和上方内容。
@@ -1694,7 +1714,7 @@ class Renderer(object):
         lyric_y = {}                    # id(lyric) -> 歌词行基线 y
         lyric_anchor = {}               # id(lyric) -> 所属声部序号
         cursor = self.y
-        for q, lys in clusters:
+        for ci, (q, lys) in enumerate(clusters):
             up = 0.0                    # 本簇上方要留出临时声部那一行的高度
             down = False                # 主声部整簇下移 (只有 {dsb} 会)
             if q is not None:
@@ -1704,6 +1724,8 @@ class Renderer(object):
                 up = temp_up(vi0)
                 down = any(t["vi"] == vi0 and t["block"].kind == "dsb"
                            for t in temps)
+                if dyn_extra[ci] and not (ci == 0 and at_top):
+                    cursor += dyn_extra[ci] * k
                 if up:
                     cursor += up
                 vy[id(q)] = cursor
