@@ -124,7 +124,6 @@ NOTE_STYLES = {
     "c": {"vgap": 68.0, "lead": 25.0, "off": 41.0},
 }
 LYRIC_LINE = 28                     # 歌词行间距
-LYRIC_LEAD = 15                     # 声部行与其"贴身"歌词之间的净行距
 
 BAR_UP = 14                         # 小节线高出音符基线
 BAR_DN = 13                         # 小节线低于音符基线
@@ -1341,9 +1340,9 @@ class Renderer(object):
         #
         # 脚本正文里, 一个声部行连同紧跟在它后面的歌词行构成一个"簇": 歌词
         # 紧贴该声部下方 (LYRIC_OFF), 同簇内多行歌词按 LYRIC_LINE 递进。簇的
-        # 高度 = 声部行 (VOICE_GAP) + (首行歌词 LYRIC_LEAD) + 其余歌词行。
-        # 当歌词与声部交错(后面还跟着别的声部)时, 参考实现把歌词"贴"进声部
-        # 行距里, 首行歌词只额外占用 LYRIC_LEAD 的高度。
+        # 高度 = 声部行 (VOICE_GAP) + 首行歌词 (LYRIC_LINE) + 其余歌词行。
+        # 参考实现实测 002/003/012/014: 无论歌词是否与声部交错, 每个簇都按
+        # 78+28*n 递进, 交错时并不压缩歌词行距。
         seq = order if order else (
             [("Q", q) for q in qlines] + [("C", ly) for ly in lyrics])
         qindex = {id(q): i for i, q in enumerate(qlines)}
@@ -1355,20 +1354,15 @@ class Renderer(object):
                 clusters[-1][1].append(lobj)
             else:
                 clusters.append([None, [lobj]])
-        interleaved = any(clusters[i][1] for i in range(len(clusters) - 1))
-        # 只有歌词与声部交错 (多声部谱) 时, 首行歌词才"贴"进声部行距里;
-        # 单声部下方连着几行歌词时, 首行与其余行同样按 LYRIC_LINE 递进
-        # (参考实现实测 015/016: 4 行/2 行歌词的簇高都是 78+28*n)。
-        tight = interleaved
         if self.style_tight:
             ly_lead = self.style_lead
         else:
-            ly_lead = LYRIC_LEAD if tight else LYRIC_LINE
+            ly_lead = LYRIC_LINE
         sys_h = sum((self.vgap if c[0] is not None else 0.0)
                     + (ly_lead + LYRIC_LINE * (len(c[1]) - 1) if c[1] else 0.0)
                     for c in clusters) * k
         # 版心底部: 用于判断本行是否还能排进当前页。歌词行只需到最后一行的
-        # 字身底部, 不必按整行高度(簇尾的 LYRIC_LEAD)计算。
+        # 字身底部, 不必按整行高度(簇尾的 LYRIC_LINE)计算。
         cur = self.y
         sys_bottom = 0.0
         for cq, clys in clusters:
@@ -1389,9 +1383,10 @@ class Renderer(object):
             # HOUSE_CLAMP 处, 空出 house_off 的高度给横线和上方内容。
             pad = max(pad, (self._last_bottom
                             + (HOUSE_CLAMP + house_off) * k) - self.y)
-        # 参考实现只在源码里的分页符处换页, 不按版心高度自动折行; 这里仅当
-        # 内容会超出物理页面时兜底另起一页。
-        if self.y + pad + sys_bottom > self.page_h - 20 * k:
+        # 参考实现只在源码里的分页符处换页, 不按版心高度自动折行, 甚至允许
+        # 最后一行超出页面下边(被裁剪); 这里只在"整行都落到页面下方"时才兜底
+        # 另起一页, 其余情况保持与参考一致的分页。
+        if self.y + pad > self.page_h - 20 * k:
             self._new_page()
             self.y = self._page_top
             self._last_bottom = 0.0
