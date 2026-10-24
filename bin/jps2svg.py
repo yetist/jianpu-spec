@@ -139,8 +139,10 @@ UNIT_SAME_BEAM = 1.0                # 同一拍内的减时线音符
 UNIT_SHORT = 1.5                    # 前一音符 ≤ 半拍时的间距
 UNIT_LONG = 2.0                     # 前一音符 > 半拍时的间距
 UNIT_BAR = 1.4                      # 与小节线相邻
-UNIT_END = 2.0                      # 行末最后一小节收尾
+UNIT_END = 1.65                     # 行末最后一小节收尾 (参考实现实测)
 UNIT_PAI = 1.0                      # 临时拍号占用的小节内宽度
+MELISMA_UNIT = 1.111                # 歌词"多字一音"每多一个字增加的宽度
+MELISMA_PAD = 0.113                 # 歌词"多字一音"的基础宽度 (参考实现实测)
 TEMP_DY = 28                        # 临时多声部 {dsb}: 主声部下移 / 临时声部上移
 TEMP_DY_BZ = 40                     # 临时伴奏 {bz}: 临时声部在主声部上方的高度
 TEMP_SCALE_BZ = 0.78                # 临时伴奏 {bz} 的数字缩小比例 (参考实现小号数字)
@@ -1422,7 +1424,18 @@ class Renderer(object):
             if not at_top:
                 house_y = max(house_y, self._last_bottom + HOUSE_CLAMP * k)
 
-        left = (MUSIC_L_MV if nv > 1 else MUSIC_L) * k
+        # 多声部行左边界: 参考实现只在"行首能看到第二声部"时才让出括弧的
+        # 宽度 (103); 若第二声部在行首只有隐藏休止符 8, 音乐仍从 83 开始,
+        # 也不画声部括弧 (014 第 3 行、016 第 3 行实测)。
+        def start_hidden(vi):
+            for notes, _bar in voices[vi]:
+                if notes:
+                    return all(getattr(el, "pitch", None) == "8"
+                               for el in notes)
+            return False
+
+        mv = nv > 1 and not all(start_hidden(vi) for vi in range(1, nv))
+        left = (MUSIC_L_MV if mv else MUSIC_L) * k
         # 声部名称: 参考实现把名称右对齐写在声部括弧左侧 9.5px 处 (即
         # 音乐左边界 - 35), 名称太长时会把整行音乐右移, 保证名称不出血。
         name_w = 0.0
@@ -1454,12 +1467,52 @@ class Renderer(object):
         # 参考实现里同一时刻(onset)的音符在所有声部中 x 坐标相同: 先把各声部
         # 的 onset 合并, 再用一条公共的系数序列把小节撑满, 每个音符落在自己
         # onset 对应的位置上。
+        # 歌词"多字一音" (``~`` 把几个字并到同一个音符上): 参考实现会给这个
+        # 音符后面额外让出宽度, 每多一个字约 1.111 个单位, 两个字合计约
+        # 1.224 个单位 (实测 u=25 时 30.6px, u=14.4 时 17.7px)。标点算在槽位
+        # 里但不增加宽度 (``三，`` 不撑开间距)。
+        slot_k = [[] for _ in range(nv)]    # slot_k[vi][槽位序号] = 字数
+        for cq, clys in clusters:
+            vi0 = qindex.get(id(cq))
+            if vi0 is None:
+                continue
+            for ly in clys:
+                si = 0
+                for tok in ly.tokens:
+                    if tok is None:
+                        si += 1
+                        continue
+                    # 只数汉字等单字符 (英文单词、标点都不算"多字一音")
+                    kk = sum(1 for ch in tok
+                             if not is_punct(ch)
+                             and not (ch.isascii() and ch.isalnum()))
+                    if si >= len(slot_k[vi0]):
+                        slot_k[vi0].append(kk)
+                    else:
+                        slot_k[vi0][si] = max(slot_k[vi0][si], kk)
+                    si += 1
+
+        def hidden_only(vi, m):
+            """该声部这一小节是否只有隐藏休止符 (``8``)。"""
+            notes = voices[vi][m][0] if m < len(voices[vi]) else []
+            return bool(notes) and all(getattr(el, "pitch", None) == "8"
+                                       for el in notes)
+
         vcoefs = []                     # vcoefs[vi][m] = (coefs, onsets)
-        for v in voices:
+        for vi, v in enumerate(voices):
             mm = []
+            si = 0
             for m in range(nmeas):
                 notes, bar = v[m] if m < len(v) else ([], None)
-                mm.append(self._measure_coefs(notes, bar, m == nmeas - 1))
+                cfs, ons = self._measure_coefs(notes, bar, m == nmeas - 1)
+                for i, el in enumerate(notes):
+                    if not getattr(el, "is_lyric_slot", False):
+                        continue
+                    kk = slot_k[vi][si] if si < len(slot_k[vi]) else 0
+                    si += 1
+                    if kk > 1 and i < len(cfs):
+                        cfs[i] += MELISMA_UNIT * (kk - 1) + MELISMA_PAD
+                mm.append((cfs, ons))
             vcoefs.append(mm)
 
         def has_notes(m):
@@ -1538,7 +1591,11 @@ class Renderer(object):
                 grid.append(0.0)
                 gcum.append([])
                 continue
-            srcs = [vcoefs[vi][m] for vi in range(nv) if m < len(vcoefs[vi])]
+            srcs = [vcoefs[vi][m] for vi in range(nv)
+                    if m < len(vcoefs[vi]) and not hidden_only(vi, m)]
+            if not srcs:                # 整小节都是隐藏休止符时兜底
+                srcs = [vcoefs[vi][m] for vi in range(nv)
+                        if m < len(vcoefs[vi])]
             for t in temps:
                 j = m - t["m0"]
                 if 0 <= j < t["n"]:
@@ -1782,6 +1839,12 @@ class Renderer(object):
                     self._draw_bar(bar, bx, nb - temp_up(vi, m))
                 else:
                     self._draw_bar(bar, bx, nb + span_dy(vi, m))
+            if barx[vi][-1][1] is None:
+                # 行末没有小节线时 (源码这行没写 "|"), 参考实现仍在版心右边界
+                # 收一条竖线。
+                _end = BarEl()
+                _end.lines = 1
+                self._draw_bar(_end, right, nb + span_dy(vi, nmeas - 1))
             slots.append(sl)
             self._draw_hairpins(q, idpos, nb)
 
@@ -1812,7 +1875,8 @@ class Renderer(object):
                         if sbf_bar is None or bx < sbf_bar:
                             sbf_bar = bx
             if sbf_bar is None:
-                self._draw_voice_bracket(left, vtop, vbot, k)
+                if mv:
+                    self._draw_voice_bracket(left, vtop, vbot, k)
             else:
                 # 括弧落在第二个声部真正进入的那个音符左侧 25.5px
                 xs = [px for vi in range(nv) for m in range(nmeas)
@@ -2157,7 +2221,9 @@ class Renderer(object):
 
     # ---- 绘制小节线 ---------------------------------------------------
     def _draw_bar(self, bar, cx, nb):
-        if bar.hide:
+        # "|/" 隐藏小节线; "|*" 只在小节线本身上隐藏占位, 参考实现仍然把这
+        # 条竖线画出来 (014 第 3 行、016 第 3 行的隐藏休止符声部实测)。
+        if bar.hide and not bar.hide_space:
             return
         k = self.k
         y1 = nb - BAR_UP * k
