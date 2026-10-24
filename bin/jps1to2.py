@@ -33,6 +33,24 @@ TOOL_VERSION = "0.1"
 DYNAMICS = {"pp", "p", "mp", "mf", "f", "ff", "fff", "sf", "sfz", "fp", "sfp"}
 SKIP_WORDS = {"sbf"}
 
+# v1 符号表中的常见记号（见 v1/03-曲部分.md 的记号表）。
+# `+` 是 v1 的长记号写法，如 &sby+、&xby+、&cy+。
+MARK_ORNAMENTS = {
+    "yc": "\\fermata",
+    "bc": "\\ten",
+    "zy": "\\acc",
+    "dy": "\\stacc",
+    "hx": "\\breath",
+    "shy": "\\gliss(up)",
+    "xhy": "\\gliss(down)",
+    "sby": "\\mordent",
+    "sby+": "\\mordent",
+    "xby": "\\mordent(lower)",
+    "xby+": "\\mordent(lower)",
+    "cy": "\\trill",
+    "cy+": "\\trill",
+}
+
 
 # ---------------------------------------------------------------------------
 # 报告
@@ -54,6 +72,27 @@ class Report:
 
     def __len__(self) -> int:
         return len(self.entries)
+
+
+def render_mark_ornament(name: str, report: Report, line: int) -> str | None:
+    """把 v1 的常见记号名映射为 v2 命令；未知记号返回 None。"""
+    command = MARK_ORNAMENTS.get(name)
+    if command is None:
+        return None
+    if name in ("shy", "xhy"):
+        direction = "上" if name == "shy" else "下"
+        report.add(
+            line,
+            f"v1 的 &{name} 是{direction}滑音；已保留为 {command}，"
+            "请确认渲染器支持方向参数",
+        )
+    if name.endswith("+"):
+        report.add(
+            line,
+            f"v1 的 &{name} 带 `+`（长记号），已按 {command} 输出，"
+            "请确认是否需要延长或自定义符号",
+        )
+    return command
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +393,8 @@ def parse_note_token(tok: str, line: int, report: Report) -> list:
             k = i + 1
             while k < n and tok[k].isalnum():
                 k += 1
+            if k < n and tok[k] == "+":
+                k += 1
             name = tok[i + 1:k]
             cmd = ("mark", name)
             if last is not None:
@@ -453,7 +494,7 @@ def parse_bar(tok: str, line: int, report: Report) -> BarAtom:
     # 是跳房子的右边界，不是终止线。
     terminal_spans = [
         m.span()
-        for m in re.finditer(r"\|](?:\s*/)?(?:\s*&[A-Za-z]+)*\s*$", tok)
+        for m in re.finditer(r"\|](?:\s*/)?(?:\s*&[A-Za-z]+\+?)*\s*$", tok)
     ]
     bar.terminal = bool(terminal_spans)
 
@@ -502,7 +543,7 @@ def parse_bar(tok: str, line: int, report: Report) -> BarAtom:
         elif content:
             bar.text = content.replace("_", " ")
 
-    bar.tags = [m.group(1) for m in re.finditer(r"&([A-Za-z]+)", tok)]
+    bar.tags = [m.group(1) for m in re.finditer(r"&([A-Za-z]+\+?)", tok)]
     if bar.opens or bar.closes:
         report.add(line, "小节线上的跨行连音线括号已移除（v2 自动续接）")
     if bar.house_unclosed:
@@ -664,14 +705,9 @@ class LineContext:
                 return "\\" + name
             if name in ("cresc", "dim"):
                 return "\\<" if name == "cresc" else "\\>"
-            if name == "yc":
-                return "\\fermata"
-            if name == "zy" or name == "sby":
-                self.report.add(self.line, f"v1 的 &{name} 按上波音映射为 \\mordent，请确认")
-                return "\\mordent"
-            if name == "bc":
-                self.report.add(self.line, "v1 的 &bc 按下波音映射为 \\mordent(lower)，请确认")
-                return "\\mordent(lower)"
+            mapped = render_mark_ornament(name, self.report, self.line)
+            if mapped is not None:
+                return mapped
             self.report.add(self.line, f"未知的 v1 记号 `&{name}`，已保留为 \\x-v1-{name.lower()}，请确认含义")
             return "\\x-v1-" + name.lower()
         if kind == "text":
@@ -761,17 +797,9 @@ def render_note_command(command: tuple, ctx: LineContext) -> str:
             return "\\<"
         if name == "dim":
             return "\\>"
-        if name == "yc":
-            return "\\fermata"
-        if name == "zy":
-            ctx.report.add(ctx.line, "v1 的 &zy 按上波音映射为 \\mordent，请确认")
-            return "\\mordent"
-        if name == "sby":
-            ctx.report.add(ctx.line, "v1 的 &sby 按上波音映射为 \\mordent，请确认")
-            return "\\mordent"
-        if name == "bc":
-            ctx.report.add(ctx.line, "v1 的 &bc 按下波音映射为 \\mordent(lower)，请确认")
-            return "\\mordent(lower)"
+        mapped = render_mark_ornament(name, ctx.report, ctx.line)
+        if mapped is not None:
+            return mapped
         if name == "zkh":
             ctx.group_depth += 1
             return "\\group(paren){"
